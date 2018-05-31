@@ -1,4 +1,6 @@
+import numbers
 import traceback
+import typing
 
 import attr
 import frozendict
@@ -40,6 +42,17 @@ class Table:
             bang = attr.ib()
 
         return Row
+
+
+@attr.s(slots=True, frozen=True)
+class ResultSet:
+    row_names = attr.ib()
+    rows = attr.ib()
+
+
+class Element(typing.NamedTuple):
+    value: typing.Any
+    name: str = None
 
 
 class NoSuchRelationError(Exception):
@@ -85,12 +98,15 @@ class MockDatabase:
         self._db = Database()
 
     def execute(self, query):
+        return list(self.execute_lazy(query))
+
+    def execute_lazy(self, query):
         statements = psqlparse.parse(query)
         for statement in statements:
             handler = QUERY_HANDLERS.get(statement.type)
             if not handler:
                 raise NotImplementedError(statement.type)
-            handler(self, statement)
+            yield handler(self, statement)
 
     def _handle_create_statement(self, statement):
         obj = statement._obj
@@ -129,11 +145,37 @@ class MockDatabase:
         self._db = self._db.update_table(table)
 
     def _handle_select_statement(self, statement):
-        for clause in statement.from_clause.items:
-            if isinstance(clause, psqlparse.nodes.RangeVar):
-                ...
-            else:
-                ...
+        clause = next(iter(statement.from_clause.items), None)
+        if not isinstance(clause, psqlparse.nodes.RangeVar):
+            raise NotImplementedError(type(clause))
+
+        table = self._db._get_table(clause.relname, schema=clause.schemaname)
+
+        row_sources = []
+        row_names = []
+        for target in statement.target_list.targets:
+            source, name = parse_select_expr(target['val'], sources=[table])
+            name = target.get('name', '?column?' if name is None else name)
+            row_sources.append(source)
+            row_names.append(name)
+
+        result_rows = [
+            [
+                _filter_row(source, row)
+                for source in row_sources
+            ]
+            for row in table.rows
+        ]
+
+        return ResultSet(
+            row_names=row_names,
+            rows=result_rows,
+        )
+        # for clause in statement.from_clause.items:
+        #     if isinstance(clause, psqlparse.nodes.RangeVar):
+        #         print("range", clause)
+        #     else:
+        #         print("notrange", clause)
 
 
         # _debug(statement)
@@ -141,14 +183,18 @@ class MockDatabase:
         # _debug(statement.from_clause.items[0])
         # _debug(statement.target_list.targets)
 
-        for target in statement.target_list.targets:
-            parse_select_expr(target['val'])
+
+def _filter_row(source, row):
+    try:
+        return source(row)
+    except TypeError:
+        return source
 
 
-def _debug(obj):
+def _debug(prefix, obj):
     v = dir(obj)
     # v.pop('_obj', None)
-    print(type(obj), obj, v)
+    print(prefix, type(obj), obj, v)
     print()
 
 
@@ -157,24 +203,27 @@ def simple_select(select_stmt):
     if 'valuesLists' in select_stmt:
         values = select_stmt['valuesLists']
         for row in values:
-            yield tuple(map(parse_select_expr, row))
+            yield tuple(
+                parse_select_expr(elem).value for elem in row
+            )
     else:
         raise NotImplementedError
 
 
-def parse_select_expr(expr):
-    print(expr)
+def parse_select_expr(expr, sources=None):
     expr_type, data = dict_one(expr)
     if expr_type == 'A_Const':
         const_type, value_data = dict_one(data['val'])
         if const_type == 'Integer':
-            return value_data['ival']
+            return Element(value_data['ival'])
         elif const_type == 'String':
-            return value_data['str']
+            return Element(value_data['str'])
         else:
             raise NotImplementedError(const_type)
     elif expr_type == 'ColumnRef':
-        return 'aijsoiafjsd'
+        # TODO: routing
+        column = data['fields'][0]['String']['str']
+        return Element(lambda row: getattr(row, column), name=column)
     else:
         raise NotImplementedError(expr_type)
 
@@ -229,17 +278,58 @@ def test_insert():
 def test_simple_select():
     db = MockDatabase()
     db.execute("""
-        SELECT 10, bang FROM foo.bar;
+        CREATE TABLE foo.bar (
+            baz BIGSERIAL PRIMARY KEY,
+            bang TEXT
+        );
+    """)
+    db.execute("""
+        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (1, 'hello');
+    """)
+
+    # ---
+
+    db.execute("""
+        SELECT 10 as zoom, bang FROM foo.bar;
     """)
     1 / 0
 
 
+def _print_result(result):
+    if result is None:
+        return
+    PADDING = 1
+    column_widths = [
+        max(len(str(elem)) for elem in column)
+        for column in zip(*([result.row_names] + result.rows))
+    ]
+    print('|'.join(
+        f'{name:^{width + PADDING * 2}}'
+        for width, name in zip(column_widths, result.row_names)
+    ))
+    print('+'.join('-' * (width + PADDING * 2) for width in column_widths))
+    for row in result.rows:
+        print('|'.join(
+            f'{" " * PADDING}{elem:{_align(elem)}{width}}{" " * PADDING}'
+            for width, elem in zip(column_widths, row)
+        ))
+    print(f"({len(result.rows)} row{'' if len(result.rows) == 1 else 's'})")
+    print()
+
+
+def _align(elem):
+    return '>' if isinstance(elem, numbers.Number) else '<'
+
+
 def repl():
+    import readline
+
     db = MockDatabase()
     try:
         while True:
             try:
-                db.execute(input('# '))
+                for result in db.execute_lazy(input('# ')):
+                    _print_result(result)
             except KeyboardInterrupt:
                 print()
             except EOFError:
