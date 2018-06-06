@@ -17,6 +17,33 @@ def dict_one(dict_):
     return key_value
 
 
+class AbstractRow(frozendict.frozendict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._address_missing()
+        self._address_extra()
+
+    def _address_missing(self):
+        """
+        Fill defaults of missing columns, or raise if a missing column has no default.
+        """
+        for column in type(self)._columns:
+            if column not in self:
+                raise IntegrityConstraintViolation(
+                    f"null value in column {column!r} violates not-null constraint\n"
+                    f"Failing row contains ({', '.join(self.values())})."
+                )
+
+    def _address_extra(self):
+        extra = set(self) - set(type(self)._columns)
+        raise IntegrityConstraintViolation(
+            f"column {next(iter(extra))} of relation \"?\" does not exist"
+        )
+
+    def __getattr__(self, key):
+        return self[key]
+
+
 @attr.s(slots=True, frozen=True)
 class Table:
     schema = attr.ib()
@@ -34,14 +61,12 @@ class Table:
         )
 
     @classmethod
-    def generate_rowtype(cls):
-        # XXX: obvi
-        @attr.s(slots=True, frozen=True)
-        class Row:
-            baz = attr.ib()
-            bang = attr.ib()
-
-        return Row
+    def generate_rowtype(cls, column_data):
+        columns = [
+            dict_one(column)[1]['colname']
+            for column in column_data
+        ]
+        return type('Row', (AbstractRow,), {'_columns': columns})
 
 
 @attr.s(slots=True, frozen=True)
@@ -57,6 +82,10 @@ class Element(typing.NamedTuple):
 
 class NoSuchRelationError(Exception):
     """Relation does not exist."""
+
+
+class IntegrityConstraintViolation(Exception):
+    """Integrity constraint was violated."""
 
 
 @attr.s(frozen=True, slots=True)
@@ -97,16 +126,26 @@ class MockDatabase:
     def __init__(self):
         self._db = Database()
 
+    def _execute_statement(self, statement):
+        handler = QUERY_HANDLERS.get(statement.type)
+        if not handler:
+            raise NotImplementedError(statement.type)
+        return handler(self, statement)
+
+    def execute_one(self, query):
+        statements = psqlparse.parse(query)
+        if len(statements) != 1:
+            raise ValueError("multiple statements passed")
+        statement, = statements
+        return self._execute_statement(statement)
+
     def execute(self, query):
         return list(self.execute_lazy(query))
 
     def execute_lazy(self, query):
         statements = psqlparse.parse(query)
         for statement in statements:
-            handler = QUERY_HANDLERS.get(statement.type)
-            if not handler:
-                raise NotImplementedError(statement.type)
-            yield handler(self, statement)
+            yield self._execute_statement(statement)
 
     def _handle_create_statement(self, statement):
         obj = statement._obj
@@ -116,9 +155,7 @@ class MockDatabase:
         table = Table(
             schema=relation_data['schemaname'],
             relname=relation_data['relname'],
-            rowtype=Table.generate_rowtype(
-                # XXX
-            ),
+            rowtype=Table.generate_rowtype(column_data),
         )
         self._db = self._db.create_table(table)
 
@@ -136,7 +173,7 @@ class MockDatabase:
             relname=relation_data['relname'],
         )
         table = table.insert(
-            table.rowtype(**dict(zip(
+            table.rowtype(dict(zip(
                 col_names,
                 row,
             )))
@@ -284,15 +321,41 @@ def test_simple_select():
         );
     """)
     db.execute("""
-        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (1, 'hello');
+        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (2, 'hello');
     """)
 
     # ---
 
-    db.execute("""
+    result = db.execute_one("""
         SELECT 10 as zoom, bang FROM foo.bar;
     """)
-    1 / 0
+
+    assert result.rows == [[10, 'hi'], [10, 'hello']]
+
+
+def test_simple_join():
+    db = MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT PRIMARY KEY,
+            bang TEXT
+        );
+    """)
+    db.execute("""
+        CREATE TABLE foo.zow (
+            bar_baz BIGINT PRIMARY KEY,
+            bam TEXT
+        );
+    """)
+
+    db.execute("""
+        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (2, 'hello'), (3, 'sup'), (4, 'salutations'), (5, 'yo');
+        INSERT INTO foo.zow (bar_baz, bam) VALUES (3, 'three'), (6, 'six!?'), (1, 'one'), (2, 'two'), (4, 'four');
+    """)
+
+    db.execute("""
+        SELECT baz, bang, bam FROM foo.bar JOIN foo.zow ON baz = bar_baz;
+    """)
 
 
 def _print_result(result):
