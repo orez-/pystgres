@@ -183,10 +183,7 @@ class MockDatabase:
 
     def _handle_select_statement(self, statement):
         clause = next(iter(statement.from_clause.items), None)
-        if not isinstance(clause, psqlparse.nodes.RangeVar):
-            raise NotImplementedError(type(clause))
-
-        table = self._db._get_table(clause.relname, schema=clause.schemaname)
+        table = self._parse_sources(clause)
 
         row_sources = []
         row_names = []
@@ -219,6 +216,21 @@ class MockDatabase:
         # _debug(statement.from_clause)
         # _debug(statement.from_clause.items[0])
         # _debug(statement.target_list.targets)
+
+    def _parse_sources(self, clause):
+        import psqlparse.nodes.utils
+        if isinstance(clause, psqlparse.nodes.RangeVar):
+            return [self._db._get_table(clause.relname, schema=clause.schemaname)]
+        elif isinstance(clause, psqlparse.nodes.JoinExpr):
+            # print('!', vars(clause))
+            # for k, v in vars(clause).items():
+            #     print(k, v)
+            _debug('??', clause.larg)
+            print(psqlparse.nodes.utils.build_from_obj(clause.larg))
+            sources = self._parse_sources(clause.larg) + self._parse_sources(clause.rarg)
+            print(sources)
+        else:
+            raise NotImplementedError(type(clause))
 
 
 def _filter_row(source, row):
