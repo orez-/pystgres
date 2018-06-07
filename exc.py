@@ -30,3 +30,7 @@ class UndefinedColumnError(PostgresError):
 
 class AmbiguousColumnError(PostgresError):
     error_code = '42702'
+
+
+class AmbiguousTableError(PostgresError):
+    error_code = '42P09'

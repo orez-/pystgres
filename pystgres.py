@@ -158,7 +158,7 @@ class MockDatabase:
         column_data = statement.table_elts
 
         table = Table(
-            schema=relation_data.schemaname,
+            schema=relation_data.schemaname if relation_data.schemaname is not None else 'public',
             relname=relation_data.relname,
             rowtype=Table.generate_rowtype(column_data),
         )
@@ -277,7 +277,7 @@ def parse_select_expr(expr, sources=None):
     if expr_type == 'AConst':
         return Element(expr.val.val)
     elif expr_type == 'ColumnRef':
-        column = expr.fields[0].str
+        column = expr.fields[-1].str  # XXX
         column_source = _get_column_source(column, sources)
         return Element(lambda row: getattr(row[column_source], column), name=column)
     elif expr_type == 'AExpr':
@@ -313,7 +313,7 @@ def _get_column_source(column_name, sources):
     for name, table in sources.items():
         if column_name in table.rowtype.columns:
             if column_source is not None:
-                raise AmbiguousColumnError(f"column reference {column_name!r} is ambiguous")
+                raise exc.AmbiguousColumnError(f"column reference {column_name!r} is ambiguous")
             column_source = name
     if not column_source:
         raise exc.UndefinedColumnError(f"column {column_name!r} does not exist")
@@ -328,95 +328,6 @@ QUERY_HANDLERS = {
 
 
 # ---
-
-
-def test_create_table():
-    db = MockDatabase()
-    db.execute("""
-        CREATE TABLE foo.bar (
-            baz BIGSERIAL PRIMARY KEY,
-            bang TEXT
-        );
-    """)
-
-
-def test_insert():
-    db = MockDatabase()
-    db.execute("""
-        CREATE TABLE foo.bar (
-            baz BIGSERIAL PRIMARY KEY,
-            bang TEXT
-        );
-    """)
-    db.execute("""
-        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (1, 'hello');
-    """)
-
-
-# def test_insert_defaults():
-#     db = MockDatabase()
-#     db.execute("""
-#         CREATE TABLE foo.bar (
-#             baz BIGSERIAL PRIMARY KEY,
-#             bang TEXT
-#         );
-#     """)
-#     db.execute("""
-#         INSERT INTO foo.bar (bang) VALUES ('hi'), ('hello');
-#     """)
-#     1 / 0
-
-
-def test_simple_select():
-    db = MockDatabase()
-    db.execute("""
-        CREATE TABLE foo.bar (
-            baz BIGSERIAL PRIMARY KEY,
-            bang TEXT
-        );
-    """)
-    db.execute("""
-        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (2, 'hello');
-    """)
-
-    # ---
-
-    result = db.execute_one("""
-        SELECT 10 as zoom, bang FROM foo.bar;
-    """)
-
-    assert result.rows == [[10, 'hi'], [10, 'hello']]
-
-
-def test_simple_join():
-    db = MockDatabase()
-    db.execute("""
-        CREATE TABLE foo.bar (
-            baz BIGINT PRIMARY KEY,
-            bang TEXT
-        );
-    """)
-    db.execute("""
-        CREATE TABLE foo.zow (
-            bar_baz BIGINT PRIMARY KEY,
-            bam TEXT
-        );
-    """)
-
-    db.execute("""
-        INSERT INTO foo.bar (baz, bang) VALUES (1, 'hi'), (2, 'hello'), (3, 'sup'), (4, 'salutations'), (5, 'yo');
-        INSERT INTO foo.zow (bar_baz, bam) VALUES (3, 'three'), (6, 'six!?'), (1, 'one'), (2, 'two'), (4, 'four');
-    """)
-
-    result = db.execute_one("""
-        SELECT baz, bang, bam FROM foo.bar bob JOIN foo.zow ON baz = bar_baz;
-    """)
-    assert result.rows == [
-        [1, 'hi', 'one'],
-        [2, 'hello', 'two'],
-        [3, 'sup', 'three'],
-        [4, 'salutations', 'four'],
-    ]
 
 
 def _print_result(result):
