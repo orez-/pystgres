@@ -285,6 +285,8 @@ def parse_select_expr(expr, sources=None):
         right_element = parse_select_expr(expr.rexpr, sources)
         operation = _get_aexpr_op(expr.name[0].val)
         return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
+    elif expr_type == 'TypeCast':
+        return parse_select_expr(expr.arg)
     else:
         raise NotImplementedError(expr_type)
 
@@ -450,7 +452,8 @@ def repl():
     try:
         while True:
             try:
-                for result in db.execute_lazy(input('# ')):
+                query = input('# ')
+                for result in db.execute_lazy(query):
                     _print_result(result)
             except KeyboardInterrupt:
                 print()
@@ -459,6 +462,10 @@ def repl():
                 raise
             except exc.PostgresError as postgres_exc:
                 print("ERROR: ", postgres_exc)
+            except psqlparse.exceptions.PSqlParseError as psql_exc:
+                print("ERROR: ", psql_exc)
+                print("LINE 1:", query)
+                print("     ", " " * psql_exc.cursorpos, "^")
             except Exception:
                 traceback.print_exc()
     except EOFError:
