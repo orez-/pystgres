@@ -33,7 +33,7 @@ class AbstractRow(frozendict.frozendict):
         """
         for column in type(self).columns:
             if column not in self:
-                raise exc.IntegrityConstraintViolation(
+                raise exc.NotNullViolation(
                     f"null value in column {column!r} violates not-null constraint\n"
                     f"Failing row contains ({', '.join(self.values())})."
                 )
@@ -41,7 +41,7 @@ class AbstractRow(frozendict.frozendict):
     def _address_extra(self):
         extra = set(self) - set(type(self).columns)
         if extra:
-            raise exc.IntegrityConstraintViolation(
+            raise exc.UndefinedColumnError(
                 f"column {first(extra)} of relation \"?\" does not exist"
             )
 
@@ -93,7 +93,9 @@ class Element(typing.NamedTuple):
 
 @attr.s(frozen=True, slots=True)
 class Database:
-    schemas = attr.ib(default=frozendict.frozendict())  # TODO: schema objects
+    schemas = attr.ib(default=frozendict.frozendict({
+        'public': frozendict.frozendict(),
+    }))  # TODO: schema objects
 
     def _get_table(self, relname, schema=None):
         if schema is None:
@@ -103,11 +105,11 @@ class Database:
                 schema = self.schemas[schema_name]
                 if relname in schema:
                     return schema[relname]
-            raise exc.NoSuchRelationError(relname)
+            raise exc.UndefinedTableError(relname)
         try:
             return self.schemas[schema][relname]
         except KeyError:
-            raise exc.NoSuchRelationError(f"{schema}.{relname}") from None
+            raise exc.UndefinedTableError(f"{schema}.{relname}") from None
 
     def create_table(self, table):
         return self._update_table(table)
@@ -455,6 +457,8 @@ def repl():
             except EOFError:
                 print()
                 raise
+            except exc.PostgresError as postgres_exc:
+                print("ERROR: ", postgres_exc)
             except Exception:
                 traceback.print_exc()
     except EOFError:
