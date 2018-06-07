@@ -1,4 +1,7 @@
+from __future__ import generator_stop
+
 import numbers
+import operator
 import traceback
 import typing
 
@@ -6,15 +9,16 @@ import attr
 import frozendict
 import psqlparse
 
+import exc
 
-def dict_one(dict_):
-    """
-    Fetch the single key and value in the given dict.
 
-    If the dict has not exactly one element, ValueError is raised instead.
-    """
-    (key_value,) = dict_.items()
-    return key_value
+def first(iterable):
+    return next(iter(iterable))
+
+
+def one(iterable):
+    only, = iterable
+    return only
 
 
 class AbstractRow(frozendict.frozendict):
@@ -27,18 +31,19 @@ class AbstractRow(frozendict.frozendict):
         """
         Fill defaults of missing columns, or raise if a missing column has no default.
         """
-        for column in type(self)._columns:
+        for column in type(self).columns:
             if column not in self:
-                raise IntegrityConstraintViolation(
+                raise exc.IntegrityConstraintViolation(
                     f"null value in column {column!r} violates not-null constraint\n"
                     f"Failing row contains ({', '.join(self.values())})."
                 )
 
     def _address_extra(self):
-        extra = set(self) - set(type(self)._columns)
-        raise IntegrityConstraintViolation(
-            f"column {next(iter(extra))} of relation \"?\" does not exist"
-        )
+        extra = set(self) - set(type(self).columns)
+        if extra:
+            raise exc.IntegrityConstraintViolation(
+                f"column {first(extra)} of relation \"?\" does not exist"
+            )
 
     def __getattr__(self, key):
         return self[key]
@@ -48,8 +53,8 @@ class AbstractRow(frozendict.frozendict):
 class Table:
     schema = attr.ib()
     relname = attr.ib()
-    rowtype = attr.ib()
-    rows = attr.ib(default=())
+    rowtype = attr.ib(repr=False)
+    rows = attr.ib(default=(), repr=False)
 
     def insert(self, rows):
         # TODO: constraints
@@ -63,10 +68,10 @@ class Table:
     @classmethod
     def generate_rowtype(cls, column_data):
         columns = [
-            dict_one(column)[1]['colname']
+            column.colname
             for column in column_data
         ]
-        return type('Row', (AbstractRow,), {'_columns': columns})
+        return type('Row', (AbstractRow,), {'columns': columns})
 
 
 @attr.s(slots=True, frozen=True)
@@ -79,13 +84,11 @@ class Element(typing.NamedTuple):
     value: typing.Any
     name: str = None
 
-
-class NoSuchRelationError(Exception):
-    """Relation does not exist."""
-
-
-class IntegrityConstraintViolation(Exception):
-    """Integrity constraint was violated."""
+    def eval(self, row):
+        try:
+            return self.value(row)
+        except TypeError:
+            return self.value
 
 
 @attr.s(frozen=True, slots=True)
@@ -100,11 +103,11 @@ class Database:
                 schema = self.schemas[schema_name]
                 if relname in schema:
                     return schema[relname]
-            raise NoSuchRelationError(relname)
+            raise exc.NoSuchRelationError(relname)
         try:
             return self.schemas[schema][relname]
         except KeyError:
-            raise NoSuchRelationError(f"{schema}.{relname}") from None
+            raise exc.NoSuchRelationError(f"{schema}.{relname}") from None
 
     def create_table(self, table):
         return self._update_table(table)
@@ -127,9 +130,10 @@ class MockDatabase:
         self._db = Database()
 
     def _execute_statement(self, statement):
-        handler = QUERY_HANDLERS.get(statement.type)
+        stmt_type = type(statement).__name__
+        handler = QUERY_HANDLERS.get(stmt_type)
         if not handler:
-            raise NotImplementedError(statement.type)
+            raise NotImplementedError(stmt_type)
         return handler(self, statement)
 
     def execute_one(self, query):
@@ -148,96 +152,103 @@ class MockDatabase:
             yield self._execute_statement(statement)
 
     def _handle_create_statement(self, statement):
-        obj = statement._obj
-        relation_data = obj['relation']['RangeVar']
-        column_data = obj['tableElts']
+        relation_data = statement.relation
+        column_data = statement.table_elts
 
         table = Table(
-            schema=relation_data['schemaname'],
-            relname=relation_data['relname'],
+            schema=relation_data.schemaname,
+            relname=relation_data.relname,
             rowtype=Table.generate_rowtype(column_data),
         )
         self._db = self._db.create_table(table)
 
     def _handle_insert_statement(self, statement):
-        obj = statement._obj
-        relation_data = obj['relation']['RangeVar']
+        relation_data = statement.relation
         col_names = [
-            col['ResTarget']['name']
-            for col in obj['cols']
+            col.name
+            for col in statement.cols
         ]
-        rows = simple_select(obj['selectStmt']['SelectStmt'])
+        rows = simple_select(statement.select_stmt)
 
         table = self._db._get_table(
-            schema=relation_data['schemaname'],
-            relname=relation_data['relname'],
+            schema=relation_data.schemaname,
+            relname=relation_data.relname,
         )
         table = table.insert(
-            table.rowtype(dict(zip(
+            table.rowtype(zip(
                 col_names,
                 row,
-            )))
+            ))
             for row in rows
         )
         self._db = self._db.update_table(table)
 
     def _handle_select_statement(self, statement):
-        clause = next(iter(statement.from_clause.items), None)
-        table = self._parse_sources(clause)
+        clause = next(iter(statement.from_clause), None)
+        from_sources, rows = self._parse_from_clauses(clause)
 
+        # select columns
         row_sources = []
         row_names = []
-        for target in statement.target_list.targets:
-            source, name = parse_select_expr(target['val'], sources=[table])
-            name = target.get('name', '?column?' if name is None else name)
-            row_sources.append(source)
+        for target in statement.target_list:
+            element = parse_select_expr(target.val, sources=from_sources)
+            name = target.name or ('?column?' if element.name is None else element.name)
+            row_sources.append(element)
             row_names.append(name)
 
         result_rows = [
             [
-                _filter_row(source, row)
+                source.eval(row)
                 for source in row_sources
             ]
-            for row in table.rows
+            for row in rows
         ]
 
         return ResultSet(
             row_names=row_names,
             rows=result_rows,
         )
-        # for clause in statement.from_clause.items:
-        #     if isinstance(clause, psqlparse.nodes.RangeVar):
-        #         print("range", clause)
-        #     else:
-        #         print("notrange", clause)
 
-
-        # _debug(statement)
-        # _debug(statement.from_clause)
-        # _debug(statement.from_clause.items[0])
-        # _debug(statement.target_list.targets)
-
-    def _parse_sources(self, clause):
-        import psqlparse.nodes.utils
+    def _parse_from_clauses(self, clause):
         if isinstance(clause, psqlparse.nodes.RangeVar):
-            return [self._db._get_table(clause.relname, schema=clause.schemaname)]
+            name = clause.alias.aliasname if clause.alias else clause.relname
+            table = self._db._get_table(clause.relname, schema=clause.schemaname)
+            from_source = {name: table}
+            rows = ({name: row} for row in table.rows)
+            return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
-            # print('!', vars(clause))
-            # for k, v in vars(clause).items():
-            #     print(k, v)
-            _debug('??', clause.larg)
-            print(psqlparse.nodes.utils.build_from_obj(clause.larg))
-            sources = self._parse_sources(clause.larg) + self._parse_sources(clause.rarg)
-            print(sources)
+            left_sources, left_rows = self._parse_from_clauses(clause.larg)
+            right_sources, right_rows = self._parse_from_clauses(clause.rarg)
+
+            # sources
+            dups_names = left_sources.keys() & right_sources.keys()
+            if dups_names:
+                raise exc.DuplicateAliasError(
+                    f"table name {first(dups_names)!r} specified more than once"
+                )
+            sources = {**left_sources, **right_sources}
+
+            # rows
+            # TODO: basic join strategies?
+            right_rows = list(right_rows)
+            rows = (
+                {**left_row, **right_row}
+                for left_row in left_rows
+                for right_row in right_rows
+            )
+
+            if clause.quals:
+                quals_expr = parse_select_expr(clause.quals, sources=sources)
+                rows = (
+                    row for row in rows
+                    if quals_expr.eval(row)
+                )
+            else:
+                raise NotImplementedError(clause)
+
+            return sources, rows
         else:
             raise NotImplementedError(type(clause))
-
-
-def _filter_row(source, row):
-    try:
-        return source(row)
-    except TypeError:
-        return source
 
 
 def _debug(prefix, obj):
@@ -249,8 +260,8 @@ def _debug(prefix, obj):
 
 def simple_select(select_stmt):
     # XXX: almost certainly gonna need to rethink how this works.
-    if 'valuesLists' in select_stmt:
-        values = select_stmt['valuesLists']
+    values = select_stmt.values_lists
+    if values:
         for row in values:
             yield tuple(
                 parse_select_expr(elem).value for elem in row
@@ -260,21 +271,49 @@ def simple_select(select_stmt):
 
 
 def parse_select_expr(expr, sources=None):
-    expr_type, data = dict_one(expr)
-    if expr_type == 'A_Const':
-        const_type, value_data = dict_one(data['val'])
-        if const_type == 'Integer':
-            return Element(value_data['ival'])
-        elif const_type == 'String':
-            return Element(value_data['str'])
-        else:
-            raise NotImplementedError(const_type)
+    expr_type = type(expr).__name__
+    if expr_type == 'AConst':
+        return Element(expr.val.val)
     elif expr_type == 'ColumnRef':
-        # TODO: routing
-        column = data['fields'][0]['String']['str']
-        return Element(lambda row: getattr(row, column), name=column)
+        column = expr.fields[0].str
+        column_source = _get_column_source(column, sources)
+        return Element(lambda row: getattr(row[column_source], column), name=column)
+    elif expr_type == 'AExpr':
+        left_element = parse_select_expr(expr.lexpr, sources)
+        right_element = parse_select_expr(expr.rexpr, sources)
+        operation = _get_aexpr_op(expr.name[0].val)
+        return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
     else:
         raise NotImplementedError(expr_type)
+
+
+def _get_aexpr_op(symbol):
+    operators = {
+        '=': operator.__eq__,
+        '<>': operator.__ne__,
+        '!=': operator.__ne__,
+        '>': operator.__gt__,
+        '>=': operator.__ge__,
+        '<': operator.__lt__,
+        '<=': operator.__le__,
+        '+': operator.__add__,
+        '-': operator.__sub__,
+    }
+    if symbol not in operators:
+        raise NotImplementedError(symbol)
+    return operators[symbol]
+
+
+def _get_column_source(column_name, sources):
+    column_source = None
+    for name, table in sources.items():
+        if column_name in table.rowtype.columns:
+            if column_source is not None:
+                raise AmbiguousColumnError(f"column reference {column_name!r} is ambiguous")
+            column_source = name
+    if not column_source:
+        raise exc.UndefinedColumnError(f"column {column_name!r} does not exist")
+    return column_source
 
 
 QUERY_HANDLERS = {
@@ -365,9 +404,15 @@ def test_simple_join():
         INSERT INTO foo.zow (bar_baz, bam) VALUES (3, 'three'), (6, 'six!?'), (1, 'one'), (2, 'two'), (4, 'four');
     """)
 
-    db.execute("""
-        SELECT baz, bang, bam FROM foo.bar JOIN foo.zow ON baz = bar_baz;
+    result = db.execute_one("""
+        SELECT baz, bang, bam FROM foo.bar bob JOIN foo.zow ON baz = bar_baz;
     """)
+    assert result.rows == [
+        [1, 'hi', 'one'],
+        [2, 'hello', 'two'],
+        [3, 'sup', 'three'],
+        [4, 'salutations', 'four'],
+    ]
 
 
 def _print_result(result):
