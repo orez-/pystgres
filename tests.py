@@ -93,6 +93,7 @@ def test_simple_join():
     ]
 
 
+@pytest.mark.xfail
 def test_bare_star():
     db = pystgres.MockDatabase()
     db.execute("""
@@ -114,6 +115,7 @@ def test_bare_star():
     ]
 
 
+@pytest.mark.xfail
 def test_qualified_star():
     db = pystgres.MockDatabase()
     db.execute("""
@@ -142,7 +144,7 @@ def test_qualified_star():
     ]
 
 
-def test_nonsense():
+def test_ambiguous_column():
     db = pystgres.MockDatabase()
     db.execute("""
         CREATE TABLE foo.bar (
@@ -156,13 +158,57 @@ def test_nonsense():
         );
     """)
 
-    with pytest.raises(exc.AmbiguousTableError):
+    with pytest.raises(exc.AmbiguousColumnError):
         db.execute_one("""
-            SELECT bar.zam FROM foo.bar JOIN bow.bar ON true;
+            SELECT baz FROM foo.bar JOIN bow.bar ON true;
         """)
 
 
-def test_ambiguous_tables():
+def test_explicit_table():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        CREATE TABLE bow.bom (
+            baz BIGINT,
+            zam TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang) VALUES (1, 'one');
+        INSERT INTO bow.bom (baz, zam) VALUES (2, 'neat');
+    """)
+    result = db.execute_one("""
+        SELECT bar.baz FROM foo.bar JOIN bow.bom ON true;
+    """)
+    assert result.rows == [[1]]
+
+
+def test_explicit_schema():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        CREATE TABLE bow.bar (
+            baz BIGINT,
+            zam TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang) VALUES (10, 'ten');
+        INSERT INTO bow.bar (baz, zam) VALUES (11, 'cool');
+    """)
+    result = db.execute_one("""
+        SELECT foo.bar.baz FROM foo.bar JOIN bow.bar ON true;
+    """)
+    assert result.rows == [[10]]
+
+
+def test_duplicate_aliases():
     db = pystgres.MockDatabase()
     db.execute("""
         CREATE TABLE foo.bar (
@@ -172,14 +218,14 @@ def test_ambiguous_tables():
     """)
 
     with pytest.raises(exc.DuplicateAliasError):
-        db.execute_one("select 1 from foo.bar join foo.bar on true;")
+        db.execute_one("SELECT 1 FROM foo.bar JOIN foo.bar ON true;")
 
 
 @pytest.mark.parametrize('query', [
     "SELECT 1 FROM foo.bar JOIN bow.bar ON true;",  # different schema
     "SELECT 1 FROM foo.bar JOIN foo.bar _ ON true;",  # aliased
 ])
-def test_not_ambiguous_tables(query):
+def test_not_duplicate_aliases(query):
     db = pystgres.MockDatabase()
     db.execute("""
         CREATE TABLE foo.bar (
@@ -194,3 +240,24 @@ def test_not_ambiguous_tables(query):
     """)
 
     db.execute_one(query)
+
+
+@pytest.mark.xfail
+@pytest.mark.parametrize("column,expected", [
+    ('bang', [1, 2, 3]),
+    ('array_agg(bang)', [[('a', 'b', 'c')], [('ab', 'za')], [('wow', 'huh')]]),
+])
+def test_aggregation(column, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
+    """)
+
+    result = db.execute_one(f"SELECT {column} FROM foo.bar GROUP BY baz;")
+    assert result.rows == expected

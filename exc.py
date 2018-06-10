@@ -8,11 +8,14 @@ class UndefinedTableError(PostgresError):
     """Relation does not exist."""
     error_code = '42P01'
 
-    def __init__(self, table):
+    def __init__(self, message=None, *, table=None):
         super().__init__()
+        self._message = message
         self._table = table
 
     def __str__(self):
+        if self._message:
+            return self._message
         return f'relation "{self._table}" does not exist'
 
 
@@ -22,6 +25,13 @@ class NotNullViolation(PostgresError):
 
 class DuplicateAliasError(PostgresError):
     error_code = '42712'
+
+    def __init__(self, table):
+        super().__init__()
+        self._table = table
+
+    def __str__(self):
+        return f'table name "{self._table!r}" specified more than once'
 
 
 class UndefinedColumnError(PostgresError):

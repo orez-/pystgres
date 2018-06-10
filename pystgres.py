@@ -1,5 +1,6 @@
 from __future__ import generator_stop
 
+import collections
 import numbers
 import operator
 import traceback
@@ -105,11 +106,11 @@ class Database:
                 schema = self.schemas[schema_name]
                 if relname in schema:
                     return schema[relname]
-            raise exc.UndefinedTableError(relname)
+            raise exc.UndefinedTableError(table=relname)
         try:
             return self.schemas[schema][relname]
         except KeyError:
-            raise exc.UndefinedTableError(f"{schema}.{relname}") from None
+            raise exc.UndefinedTableError(table=f"{schema}.{relname}") from None
 
     def create_table(self, table):
         return self._update_table(table)
@@ -125,6 +126,86 @@ class Database:
         return Database(
             schemas=frozendict.frozendict(schemas),
         )
+
+
+class QueryTables:  # XXX bad name
+    def __init__(self):
+        self._aliases = {}
+        self._tables = collections.defaultdict(dict)  # {relname: {schema: _}}
+
+    def _clone(self):
+        qt = QueryTables()
+        qt._aliases = dict(self._aliases)
+        qt._tables = collections.defaultdict(
+            dict,
+            (
+                (relname, dict(schemas))
+                for relname, schemas in self._tables.items()
+            )
+        )
+        return qt
+
+    def add(self, *, table, alias=None):
+        if alias:
+            if alias in self._aliases or alias in self._tables:
+                raise exc.DuplicateAliasError(alias)
+            self._aliases[alias] = table
+        else:
+            if table.relname in self._aliases or table.schema in self._tables.get(table.relname, ()):
+                raise exc.DuplicateAliasError(table.relname)
+            self._tables[table.relname][table.schema] = table
+
+    def all_tables(self):
+        for alias, table in self._aliases.items():
+            yield table, alias
+        for schemas in self._tables.values():
+            for table in schemas.values():
+                yield table, None
+
+    @classmethod
+    def merge(cls, *qts):
+        qts = iter(qts)
+        first_qt = next(qts)
+        new = first_qt._clone()
+        for qt in qts:
+            for table, alias in qt.all_tables():
+                new.add(table=table, alias=alias)
+        return new
+
+    def _get_source_by_qualified_table(self, schema_name, table_name):
+        schemas = self._tables.get(table_name)
+        table = schemas and schemas.get(schema_name)
+        if not table:
+            raise exc.UndefinedTableError(f"missing FROM-clause entry for table {table_name!r}")
+        return table, None
+
+    def _get_source_by_table(self, name):
+        if name in self._aliases:
+            return self._aliases[name], name
+        if name in self._tables:
+            tables = self._tables[name]
+            if len(tables) > 1:
+                raise exc.AmbiguousTableError(f"table reference {name!r} is ambiguous")
+            return one(tables.values()), None
+        raise exc.UndefinedTableError(f"missing FROM-clause entry for table {name!r}")
+
+    def _get_source_by_column(self, column_name):
+        column_source = None
+        for table, alias in self.all_tables():
+            if column_name in table.rowtype.columns:
+                if column_source is not None:
+                    raise exc.AmbiguousColumnError(f"column reference {column_name!r} is ambiguous")
+                column_source = table, alias
+        if not column_source:
+            raise exc.UndefinedColumnError(f"column {column_name!r} does not exist")
+        return column_source
+
+    def get_column_source(self, column_name, table_name=None, schema_name=None):
+        if not table_name:
+            return self._get_source_by_column(column_name)
+        elif not schema_name:
+            return self._get_source_by_table(table_name)
+        return self._get_source_by_qualified_table(schema_name, table_name)
 
 
 class MockDatabase:
@@ -213,22 +294,17 @@ class MockDatabase:
 
     def _parse_from_clauses(self, clause):
         if isinstance(clause, psqlparse.nodes.RangeVar):
-            name = clause.alias.aliasname if clause.alias else clause.relname
+            from_source = QueryTables()
             table = self._db._get_table(clause.relname, schema=clause.schemaname)
-            from_source = {name: table}
-            rows = ({name: row} for row in table.rows)
+            alias = clause.alias.aliasname if clause.alias else None
+            from_source.add(table=table, alias=alias)
+            rows = ({(table, alias): row} for row in table.rows)
             return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
             left_sources, left_rows = self._parse_from_clauses(clause.larg)
             right_sources, right_rows = self._parse_from_clauses(clause.rarg)
 
-            # sources
-            dups_names = left_sources.keys() & right_sources.keys()
-            if dups_names:
-                raise exc.DuplicateAliasError(
-                    f"table name {first(dups_names)!r} specified more than once"
-                )
-            sources = {**left_sources, **right_sources}
+            sources = QueryTables.merge(left_sources, right_sources)
 
             # rows
             # TODO: basic join strategies?
@@ -277,8 +353,12 @@ def parse_select_expr(expr, sources=None):
     if expr_type == 'AConst':
         return Element(expr.val.val)
     elif expr_type == 'ColumnRef':
-        column = expr.fields[-1].str  # XXX
-        column_source = _get_column_source(column, sources)
+        last = expr.fields[-1]
+        if isinstance(last, psqlparse.nodes.AStar):
+            raise NotImplementedError()
+        column = last.str
+        column_ref = [piece.str for piece in expr.fields[::-1]]
+        column_source = sources.get_column_source(*column_ref)
         return Element(lambda row: getattr(row[column_source], column), name=column)
     elif expr_type == 'AExpr':
         left_element = parse_select_expr(expr.lexpr, sources)
@@ -306,18 +386,6 @@ def _get_aexpr_op(symbol):
     if symbol not in operators:
         raise NotImplementedError(symbol)
     return operators[symbol]
-
-
-def _get_column_source(column_name, sources):
-    column_source = None
-    for name, table in sources.items():
-        if column_name in table.rowtype.columns:
-            if column_source is not None:
-                raise exc.AmbiguousColumnError(f"column reference {column_name!r} is ambiguous")
-            column_source = name
-    if not column_source:
-        raise exc.UndefinedColumnError(f"column {column_name!r} does not exist")
-    return column_source
 
 
 QUERY_HANDLERS = {
