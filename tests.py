@@ -261,3 +261,17 @@ def test_aggregation(column, expected):
 
     result = db.execute_one(f"SELECT {column} FROM foo.bar GROUP BY baz;")
     assert result.rows == expected
+
+
+def test_simple_where_clause():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+        INSERT INTO foo.bar (baz, bang) VALUES (10, 'ten'), (11, 'eleven'), (12, 'twelve');
+    """)
+
+    result = db.execute_one("SELECT baz, bang FROM foo.bar WHERE baz = 11;")
+    assert result.rows == [[11, 'eleven']]

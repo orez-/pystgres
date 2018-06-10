@@ -279,6 +279,13 @@ class MockDatabase:
             row_sources.append(element)
             row_names.append(name)
 
+        if statement.where_clause:
+            where_expr = parse_select_expr(statement.where_clause, sources=from_sources)
+            rows = (
+                row for row in rows
+                if where_expr.eval(row)
+            )
+
         result_rows = [
             [
                 source.eval(row)
