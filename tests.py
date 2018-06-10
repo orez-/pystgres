@@ -27,18 +27,23 @@ def test_insert():
     """)
 
 
-# def test_insert_defaults():
-#     db = pystgres.MockDatabase()
-#     db.execute("""
-#         CREATE TABLE foo.bar (
-#             baz BIGSERIAL PRIMARY KEY,
-#             bang TEXT
-#         );
-#     """)
-#     db.execute("""
-#         INSERT INTO foo.bar (bang) VALUES ('hi'), ('hello');
-#     """)
-#     1 / 0
+@pytest.mark.xfail
+def test_insert_defaults():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGSERIAL PRIMARY KEY,
+            bang TEXT
+        );
+    """)
+    db.execute("""
+        INSERT INTO foo.bar (bang) VALUES ('hi'), ('hello');
+    """)
+    result = db.execute_one("SELECT * FROM foo.bar;")
+    assert result.rows == [
+        [1, 'hi'],
+        [2, 'hello'],
+    ]
 
 
 def test_simple_select():
