@@ -267,13 +267,17 @@ class MockDatabase:
         self._db = self._db.update_table(table)
 
     def _handle_select_statement(self, statement):
-        clause = next(iter(statement.from_clause), None)
-        from_sources, rows = self._parse_from_clauses(clause)
+        from_sources = QueryTables()
+        rows = [{}]
+        for clause in statement.from_clause or ():
+            agg_from_source, agg_row = self._parse_from_clauses(clause)
+            from_sources = QueryTables.merge(agg_from_source, from_sources)
+            rows = self._merge_rows(rows, agg_row)
 
         # select columns
         row_sources = []
         row_names = []
-        for target in statement.target_list:
+        for target in statement.target_list or []:
             element = parse_select_expr(target.val, sources=from_sources)
             name = target.name or ('?column?' if element.name is None else element.name)
             row_sources.append(element)
@@ -299,6 +303,23 @@ class MockDatabase:
             rows=result_rows,
         )
 
+    def _merge_rows(self, left_rows, right_rows):
+        # TODO: basic join strategies?
+        right_rows = list(right_rows)
+        return (
+            {**left_row, **right_row}
+            for left_row in left_rows
+            for right_row in right_rows
+        )
+
+    def _merge_clauses(self, left_clause, right_clause):
+        left_sources, left_rows = self._parse_from_clauses(left_clause)
+        right_sources, right_rows = self._parse_from_clauses(right_clause)
+
+        sources = QueryTables.merge(left_sources, right_sources)
+        rows = self._merge_rows(left_rows, right_rows)
+        return sources, rows
+
     def _parse_from_clauses(self, clause):
         if isinstance(clause, psqlparse.nodes.RangeVar):
             from_source = QueryTables()
@@ -308,19 +329,7 @@ class MockDatabase:
             rows = ({(table, alias): row} for row in table.rows)
             return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
-            left_sources, left_rows = self._parse_from_clauses(clause.larg)
-            right_sources, right_rows = self._parse_from_clauses(clause.rarg)
-
-            sources = QueryTables.merge(left_sources, right_sources)
-
-            # rows
-            # TODO: basic join strategies?
-            right_rows = list(right_rows)
-            rows = (
-                {**left_row, **right_row}
-                for left_row in left_rows
-                for right_row in right_rows
-            )
+            sources, rows = self._merge_clauses(clause.larg, clause.rarg)
 
             if clause.quals:
                 quals_expr = parse_select_expr(clause.quals, sources=sources)

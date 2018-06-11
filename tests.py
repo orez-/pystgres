@@ -280,3 +280,43 @@ def test_simple_where_clause():
 
     result = db.execute_one("SELECT baz, bang FROM foo.bar WHERE baz = 11;")
     assert result.rows == [[11, 'eleven']]
+
+
+def test_no_from():
+    db = pystgres.MockDatabase()
+    result = db.execute_one("SELECT 1, 'wow';")
+    assert result.rows == [[1, 'wow']]
+
+
+def test_empty_select():
+    db = pystgres.MockDatabase()
+    result = db.execute_one("SELECT;")
+    assert result.rows == [[]]
+
+
+def test_comma_join():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+        CREATE TABLE foo.bam (
+            bing BIGINT,
+            zoop TEXT
+        );
+        INSERT INTO foo.bar (baz, bang) VALUES (10, 'ten'), (11, 'eleven'), (12, 'twelve');
+        INSERT INTO foo.bam (bing, zoop) VALUES (1, 'zip'), (2, 'zap'), (3, 'zam');
+    """)
+    result = db.execute_one("SELECT bang, zoop FROM foo.bar, foo.bam;")
+    assert result.rows == [
+        ['ten', 'zip'],
+        ['ten', 'zap'],
+        ['ten', 'zam'],
+        ['eleven', 'zip'],
+        ['eleven', 'zap'],
+        ['eleven', 'zam'],
+        ['twelve', 'zip'],
+        ['twelve', 'zap'],
+        ['twelve', 'zam'],
+    ]
