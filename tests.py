@@ -249,7 +249,7 @@ def test_not_duplicate_aliases(query):
 
 @pytest.mark.xfail
 @pytest.mark.parametrize("column,expected", [
-    ('bang', [1, 2, 3]),
+    ('bang', [[1], [2], [3]]),
     ('array_agg(bang)', [[('a', 'b', 'c')], [('ab', 'za')], [('wow', 'huh')]]),
 ])
 def test_aggregation(column, expected):
@@ -266,6 +266,93 @@ def test_aggregation(column, expected):
 
     result = db.execute_one(f"SELECT {column} FROM foo.bar GROUP BY baz;")
     assert result.rows == expected
+
+
+@pytest.mark.xfail
+@pytest.mark.parametrize('baz, group_by', [
+    ('baz', '1'),  # ordinal
+    ('baz as zow', 'zow'),  # output column
+    ('baz as zow', 'baz'),  # input column
+])
+def test_group_by_exprs(baz, group_by):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
+    """)
+    result = db.execute(f"SELECT {baz}, count(*) FROM foo.bar GROUP BY {group_by};")
+    assert result.rows == [[1, 3], [2, 2], [3, 2]]
+
+
+@pytest.mark.xfail
+def test_group_by_ambiguous():
+    """
+    Ensure input-columns have precedence over output-column names.
+
+    https://www.postgresql.org/docs/current/static/sql-select.html#SQL-GROUPBY
+    """
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
+    """)
+    result = db.execute("SELECT baz as zow, 1 as baz FROM foo.bar GROUP BY baz;")
+    assert result.rows == [[1, 1], [2, 1], [3, 1]]
+
+
+@pytest.mark.xfail
+def test_group_by_multi():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            a BIGINT,
+            b TEXT,
+            c TEXT,
+            d TEXT
+        );
+        INSERT INTO foo.bar (a, b, c, d) VALUES
+        (1, 'hey', 'neat', 'cool'),
+        (1, 'hey', 'neat', 'rad'),
+        (2, 'hey', 'neat', 'awesome'),
+        (1, 'hey', 'alright', 'ok'),
+        (1, 'oh', 'neat', 'zounds');
+    """)
+    result = db.execute("SELECT a, b, c, count(*) FROM foo.alpha GROUP BY a, b, c;")
+    assert result.rows == [
+        [1, 'hey', 'neat', 2],
+        [2, 'hey', 'neat', 1],
+        [1, 'hey', 'alright', 1],
+        [1, 'oh', 'neat', 1],
+    ]
+
+
+@pytest.mark.xfail
+def test_group_by_expression():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
+    """)
+    result = db.execute("SELECT baz LIKE '%a%', count(*) FROM foo.bar GROUP BY baz LIKE '%a%';")
+    assert result.rows == [
+        [True, 3],
+        [False, 4],
+    ]
 
 
 def test_simple_where_clause():
