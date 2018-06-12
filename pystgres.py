@@ -418,20 +418,23 @@ def _print_result(result):
     if result is None:
         return
     PADDING = 1
-    column_widths = [
-        max(len(str(elem)) for elem in column)
-        for column in zip(*([result.row_names] + result.rows))
-    ]
-    print('|'.join(
-        f'{name:^{width + PADDING * 2}}'
-        for width, name in zip(column_widths, result.row_names)
-    ))
-    print('+'.join('-' * (width + PADDING * 2) for width in column_widths))
-    for row in result.rows:
+    if result.row_names:
+        column_widths = [
+            max(len(str(elem)) for elem in column)
+            for column in zip(*([result.row_names] + result.rows))
+        ]
         print('|'.join(
-            f'{" " * PADDING}{elem:{_align(elem)}{width}}{" " * PADDING}'
-            for width, elem in zip(column_widths, row)
+            f'{name:^{width + PADDING * 2}}'
+            for width, name in zip(column_widths, result.row_names)
         ))
+        print('+'.join('-' * (width + PADDING * 2) for width in column_widths))
+        for row in result.rows:
+            print('|'.join(
+                f'{" " * PADDING}{elem:{_align(elem)}{width}}{" " * PADDING}'
+                for width, elem in zip(column_widths, row)
+            ))
+    else:
+        print('--')
     print(f"({len(result.rows)} row{'' if len(result.rows) == 1 else 's'})")
     print()
 
