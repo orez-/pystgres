@@ -7,10 +7,20 @@ import traceback
 import typing
 
 import attr
-import frozendict
+import frozendict as frozendict_lib
 import psqlparse
 
 import exc
+
+
+class frozendict(frozendict_lib.frozendict):
+    """
+    Specialized frozendict subclass to dedupe copied frozendicts.
+    """
+    def __new__(cls, *args, **kwargs):
+        if args and not kwargs and type(args[0]) == cls:
+            return args[0]
+        return super(frozendict, cls).__new__(cls)
 
 
 def first(iterable):
@@ -22,7 +32,7 @@ def one(iterable):
     return only
 
 
-class AbstractRow(frozendict.frozendict):
+class AbstractRow(frozendict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._address_missing()
@@ -94,8 +104,8 @@ class Element(typing.NamedTuple):
 
 @attr.s(frozen=True, slots=True)
 class Schema:
-    tables = attr.ib(default=(), converter=frozendict.frozendict)
-    functions = attr.ib(default=(), converter=frozendict.frozendict)
+    tables = attr.ib(default=(), converter=frozendict)
+    functions = attr.ib(default=(), converter=frozendict)
 
 
 @attr.s(frozen=True, slots=True)
@@ -110,7 +120,7 @@ def create_pg_catalog():
 @attr.s(frozen=True, slots=True)
 class Database:
     schemas = attr.ib(
-        converter=frozendict.frozendict,
+        converter=frozendict,
         default={
             'public': Schema(),
             'pg_catalog': create_pg_catalog(),
