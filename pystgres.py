@@ -159,7 +159,7 @@ class Database:
             column = last.str
             column_ref = [piece.str for piece in expr.fields[::-1]]
             column_source = sources.get_column_source(*column_ref)
-            return Element(lambda row: getattr(row[column_source], column), name=column)
+            return Element(lambda row: row[column_source][column], name=column)
         elif expr_type == 'AExpr':
             left_element = self.parse_select_expr(expr.lexpr, sources)
             right_element = self.parse_select_expr(expr.rexpr, sources)
