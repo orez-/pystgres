@@ -1,8 +1,10 @@
 from __future__ import generator_stop
 
 import collections
+import functools
 import numbers
 import operator
+import re
 import traceback
 import typing
 
@@ -30,6 +32,22 @@ def first(iterable):
 def one(iterable):
     only, = iterable
     return only
+
+
+def apply(agg_fn):
+    """
+    Decorator to apply a given function all outputs of the decorated function.
+
+    Useful for functions with many returns that require an unconditional
+    transformation, or for generator functions that should always return
+    a list or other aggregation.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            return agg_fn(fn(*args, **kwargs))
+        return inner
+    return decorator
 
 
 class AbstractRow(frozendict):
@@ -429,6 +447,40 @@ def simple_select(select_stmt, db):
         raise NotImplementedError
 
 
+@apply(''.join)
+def _like_pattern_to_regex(pattern):
+    escaped = False
+    for char in pattern:
+        if escaped:
+            if re.fullmatch(r"\W", char):
+                yield '\\'
+            yield char
+            escaped = False
+        else:
+            if char == '\\':
+                escaped = True
+            elif char == '_':
+                yield '.'
+            elif char == '%':
+                yield '.*'
+            else:
+                if re.fullmatch(r"\W", char):
+                    yield '\\'
+                yield char
+    if escaped:
+        raise InvalidEscapeSequence("LIKE pattern must not end with escape character")
+
+
+def like_operator(text, pattern):
+    regex = _like_pattern_to_regex(pattern)
+    return bool(re.fullmatch(regex, text))
+
+
+def ilike_operator(text, pattern):
+    regex = _like_pattern_to_regex(pattern)
+    return bool(re.fullmatch(regex, text, re.IGNORECASE))
+
+
 def _get_aexpr_op(symbol):
     operators = {
         '=': operator.__eq__,
@@ -440,6 +492,8 @@ def _get_aexpr_op(symbol):
         '<=': operator.__le__,
         '+': operator.__add__,
         '-': operator.__sub__,
+        '~~': like_operator,
+        '~~*': ilike_operator,
     }
     if symbol not in operators:
         raise NotImplementedError(symbol)

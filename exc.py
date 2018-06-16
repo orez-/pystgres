@@ -44,3 +44,7 @@ class AmbiguousColumnError(PostgresError):
 
 class AmbiguousTableError(PostgresError):
     error_code = '42P09'
+
+
+class InvalidEscapeSequence(PostgresError):
+    error_code = '22025'

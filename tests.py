@@ -279,6 +279,52 @@ def test_not_duplicate_aliases(query):
     db.execute_one(query)
 
 
+@pytest.mark.parametrize("expression,expected", [
+    ('%a%', [['a'], ['ab'], ['za']]),
+    ('a%', [['a'], ['ab']]),
+    ('%a', [['a'], ['za']]),
+    ('a', [['a']]),
+    (r'\%%', [['%oops']]),
+])
+def test_like_operator(expression, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh'),
+        (5, '%oops'), (6, 'ALRIGHT');
+    """)
+    result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang LIKE '{expression}';")
+    assert result.rows == expected
+
+
+@pytest.mark.parametrize("expression,expected", [
+    ('%a%', [['a'], ['ab'], ['za'], ['ALRIGHT']]),
+    ('a%', [['a'], ['ab'], ['ALRIGHT']]),
+    ('%a', [['a'], ['za']]),
+    ('a', [['a']]),
+    (r'\%%', [['%oops']]),
+])
+def test_ilike_operator(expression, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh'),
+        (5, '%oops'), (6, 'ALRIGHT');
+    """)
+    result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang ILIKE '{expression}';")
+    assert result.rows == expected
+
+
 @pytest.mark.xfail
 @pytest.mark.parametrize("column,expected", [
     ('bang', [[1], [2], [3]]),
@@ -380,7 +426,7 @@ def test_group_by_expression():
         INSERT INTO foo.bar (baz, bang)
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
-    result = db.execute("SELECT baz LIKE '%a%', count(*) FROM foo.bar GROUP BY baz LIKE '%a%';")
+    result = db.execute("SELECT bang LIKE '%a%', count(*) FROM foo.bar GROUP BY bang LIKE '%a%';")
     assert result.rows == [
         [True, 3],
         [False, 4],
