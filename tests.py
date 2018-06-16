@@ -11,6 +11,17 @@ def test_create_table():
             baz BIGSERIAL PRIMARY KEY,
             bang TEXT
         );
+
+        CREATE TABLE foo.bam (
+            boom BIGSERIAL PRIMARY KEY,
+            bing TEXT
+        );
+
+        CREATE TABLE zam.zang (
+            zoom BIGSERIAL PRIMARY KEY,
+            zippy TEXT,
+            zloop TEXT
+        );
     """)
 
 
@@ -95,6 +106,27 @@ def test_simple_join():
         [2, 'hello', 'two'],
         [3, 'sup', 'three'],
         [4, 'salutations', 'four'],
+    ]
+
+
+def test_length_fn():
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang) VALUES (1, 'ab'), (2, 'bec'), (3, 'ked');
+    """)
+
+    result = db.execute_one("""
+        SELECT baz, length(bang) FROM foo.bar;
+    """)
+    assert result.rows == [
+        [1, 2],
+        [2, 3],
+        [3, 3],
     ]
 
 

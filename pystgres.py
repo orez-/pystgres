@@ -93,24 +93,43 @@ class Element(typing.NamedTuple):
 
 
 @attr.s(frozen=True, slots=True)
-class Database:
-    schemas = attr.ib(default=frozendict.frozendict({
-        'public': frozendict.frozendict(),
-    }))  # TODO: schema objects
+class Schema:
+    tables = attr.ib(default=(), converter=frozendict.frozendict)
+    functions = attr.ib(default=(), converter=frozendict.frozendict)
 
-    def _get_table(self, relname, schema=None):
-        if schema is None:
+
+@attr.s(frozen=True, slots=True)
+class Function:
+    fn = attr.ib()
+
+
+def create_pg_catalog():
+    return Schema(functions={'length': Function(fn=len)})
+
+
+@attr.s(frozen=True, slots=True)
+class Database:
+    schemas = attr.ib(
+        converter=frozendict.frozendict,
+        default={
+            'public': Schema(),
+            'pg_catalog': create_pg_catalog(),
+        },
+    )
+
+    def _get_table(self, relname, schema_name=None):
+        if schema_name is None:
             # TODO: a real search path
             search_path = ['public']
             for schema_name in search_path:
                 schema = self.schemas[schema_name]
-                if relname in schema:
-                    return schema[relname]
+                if relname in schema.tables:
+                    return schema.tables[relname]
             raise exc.UndefinedTableError(table=relname)
         try:
-            return self.schemas[schema][relname]
+            return self.schemas[schema_name].tables[relname]
         except KeyError:
-            raise exc.UndefinedTableError(table=f"{schema}.{relname}") from None
+            raise exc.UndefinedTableError(table=f"{schema_name}.{relname}") from None
 
     def create_table(self, table):
         return self._update_table(table)
@@ -120,12 +139,50 @@ class Database:
 
     def _update_table(self, table):
         schemas = dict(self.schemas)
-        schema = dict(schemas.get(table.schema, ()))  # TODO: schema objects
-        schema[table.relname] = table
-        schemas[table.schema] = frozendict.frozendict(schema)
-        return Database(
-            schemas=frozendict.frozendict(schemas),
-        )
+        schema = schemas.get(table.schema)
+        # TODO: this should be an error, but danged if it doesn't make testing easier.
+        if not schema:
+            schema = Schema()
+        tables = dict(schema.tables)
+        tables[table.relname] = table
+        schemas[table.schema] = attr.evolve(schema, tables=tables)
+        return Database(schemas=schemas)
+
+    def parse_select_expr(self, expr, sources=None):
+        expr_type = type(expr).__name__
+        if expr_type == 'AConst':
+            return Element(expr.val.val)
+        elif expr_type == 'ColumnRef':
+            last = expr.fields[-1]
+            if isinstance(last, psqlparse.nodes.AStar):
+                raise NotImplementedError()
+            column = last.str
+            column_ref = [piece.str for piece in expr.fields[::-1]]
+            column_source = sources.get_column_source(*column_ref)
+            return Element(lambda row: getattr(row[column_source], column), name=column)
+        elif expr_type == 'AExpr':
+            left_element = self.parse_select_expr(expr.lexpr, sources)
+            right_element = self.parse_select_expr(expr.rexpr, sources)
+            operation = _get_aexpr_op(expr.name[0].val)
+            return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
+        elif expr_type == 'TypeCast':
+            return self.parse_select_expr(expr.arg, sources)
+        elif expr_type == 'FuncCall':
+            func_ref = [piece.str for piece in expr.funcname[::-1]]
+            func = self._get_function(*func_ref)
+            args = [self.parse_select_expr(arg, sources) for arg in expr.args]
+            return Element(
+                lambda row: func.fn(*(arg.eval(row) for arg in args)),
+                name=expr.funcname[-1].str,
+            )
+        else:
+            raise NotImplementedError(expr_type)
+
+    def _get_function(self, func_name, schema_name=None):
+        # TODO: so trusting.
+        if schema_name is not None:
+            return self.schemas[schema_name].functions[func_name]
+        return self.schemas['pg_catalog'].functions[func_name]
 
 
 class QueryTables:  # XXX bad name
@@ -251,10 +308,10 @@ class MockDatabase:
             col.name
             for col in statement.cols
         ]
-        rows = simple_select(statement.select_stmt)
+        rows = simple_select(statement.select_stmt, self._db)
 
         table = self._db._get_table(
-            schema=relation_data.schemaname,
+            schema_name=relation_data.schemaname,
             relname=relation_data.relname,
         )
         table = table.insert(
@@ -278,13 +335,13 @@ class MockDatabase:
         row_sources = []
         row_names = []
         for target in statement.target_list or []:
-            element = parse_select_expr(target.val, sources=from_sources)
+            element = self._db.parse_select_expr(target.val, sources=from_sources)
             name = target.name or ('?column?' if element.name is None else element.name)
             row_sources.append(element)
             row_names.append(name)
 
         if statement.where_clause:
-            where_expr = parse_select_expr(statement.where_clause, sources=from_sources)
+            where_expr = self._db.parse_select_expr(statement.where_clause, sources=from_sources)
             rows = (
                 row for row in rows
                 if where_expr.eval(row)
@@ -323,7 +380,7 @@ class MockDatabase:
     def _parse_from_clauses(self, clause):
         if isinstance(clause, psqlparse.nodes.RangeVar):
             from_source = QueryTables()
-            table = self._db._get_table(clause.relname, schema=clause.schemaname)
+            table = self._db._get_table(clause.relname, schema_name=clause.schemaname)
             alias = clause.alias.aliasname if clause.alias else None
             from_source.add(table=table, alias=alias)
             rows = ({(table, alias): row} for row in table.rows)
@@ -332,7 +389,7 @@ class MockDatabase:
             sources, rows = self._merge_clauses(clause.larg, clause.rarg)
 
             if clause.quals:
-                quals_expr = parse_select_expr(clause.quals, sources=sources)
+                quals_expr = self._db.parse_select_expr(clause.quals, sources=sources)
                 rows = (
                     row for row in rows
                     if quals_expr.eval(row)
@@ -352,39 +409,16 @@ def _debug(prefix, obj):
     print()
 
 
-def simple_select(select_stmt):
+def simple_select(select_stmt, db):
     # XXX: almost certainly gonna need to rethink how this works.
     values = select_stmt.values_lists
     if values:
         for row in values:
             yield tuple(
-                parse_select_expr(elem).value for elem in row
+                db.parse_select_expr(elem).value for elem in row
             )
     else:
         raise NotImplementedError
-
-
-def parse_select_expr(expr, sources=None):
-    expr_type = type(expr).__name__
-    if expr_type == 'AConst':
-        return Element(expr.val.val)
-    elif expr_type == 'ColumnRef':
-        last = expr.fields[-1]
-        if isinstance(last, psqlparse.nodes.AStar):
-            raise NotImplementedError()
-        column = last.str
-        column_ref = [piece.str for piece in expr.fields[::-1]]
-        column_source = sources.get_column_source(*column_ref)
-        return Element(lambda row: getattr(row[column_source], column), name=column)
-    elif expr_type == 'AExpr':
-        left_element = parse_select_expr(expr.lexpr, sources)
-        right_element = parse_select_expr(expr.rexpr, sources)
-        operation = _get_aexpr_op(expr.name[0].val)
-        return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
-    elif expr_type == 'TypeCast':
-        return parse_select_expr(expr.arg)
-    else:
-        raise NotImplementedError(expr_type)
 
 
 def _get_aexpr_op(symbol):
