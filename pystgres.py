@@ -195,22 +195,20 @@ class Database:
         return self.schemas['pg_catalog'].functions[func_name]
 
 
+@attr.s(slots=True)
 class QueryTables:  # XXX bad name
-    def __init__(self):
-        self._aliases = {}
-        self._tables = collections.defaultdict(dict)  # {relname: {schema: _}}
+    _aliases = attr.ib(default=(), converter=dict)
+    # {relname: {schema: _}}
+    _tables = attr.ib(default=(), converter=lambda data: collections.defaultdict(dict, data))
 
     def _clone(self):
-        qt = QueryTables()
-        qt._aliases = dict(self._aliases)
-        qt._tables = collections.defaultdict(
-            dict,
-            (
+        return attr.evolve(
+            self,
+            tables=(
                 (relname, dict(schemas))
                 for relname, schemas in self._tables.items()
             )
         )
-        return qt
 
     def add(self, *, table, alias=None):
         if alias:
