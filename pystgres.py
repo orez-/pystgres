@@ -263,9 +263,16 @@ class Database:
             raise NotImplementedError(expr_type)
 
     def _get_function(self, func_name, schema_name=None):
-        # TODO: so trusting.
         if schema_name is not None:
+            if schema_name not in self.schemas:
+                raise InvalidSchemaNameError(f"schema {schema_name!r} does not exist")
+            if func_name not in self.schemas[schema_name].functions:
+                raise UndefinedFunctionError(
+                    f"function {schema_name}.{func_name}() does not exist"
+                )
             return self.schemas[schema_name].functions[func_name]
+        if func_name not in self.schemas['pg_catalog'].functions:
+            raise exc.UndefinedFunctionError(f"function {func_name}() does not exist")
         return self.schemas['pg_catalog'].functions[func_name]
 
 
