@@ -4,6 +4,10 @@ import exc
 import pystgres
 
 
+def scalars(iterable):
+    return [elem for elem, in iterable]
+
+
 def test_create_table():
     db = pystgres.MockDatabase()
     db.execute("""
@@ -485,3 +489,59 @@ def test_comma_join():
         ['twelve', 'zap'],
         ['twelve', 'zam'],
     ]
+
+
+@pytest.mark.xfail
+def test_setof_type():
+    db = pystgres.MockDatabase()
+    result = db.execute_one("""
+        SELECT regexp_matches('4 8 15 16 23 42', '\d+', 'g');
+    """)
+    assert result.rows == [
+        [(4,)],
+        [(8,)],
+        [(15,)],
+        [(16,)],
+        [(23,)],
+        [(42,)],
+    ]
+
+
+@pytest.mark.parametrize('order_by,expected', [
+    ('bang, boom, bop', [2, 1, 4, 5, 3, 6, 8, 7]),
+    ('bang desc, boom desc, bop desc', [7, 8, 6, 3, 5, 4, 1, 2]),
+    ('bang asc, boom desc, bop', [5, 4, 2, 1, 8, 7, 3, 6]),
+    ('boom, bang desc, bop', [3, 6, 2, 1, 8, 7, 4, 5]),
+    ('bop, bang, boom', [2, 8, 1, 4, 5, 3, 7, 6]),
+    ('boom asc, bang, bop', [2, 1, 3, 6, 4, 8, 7, 5]),
+    ('boom desc, bang, bop', [5, 4, 8, 7, 2, 1, 3, 6]),
+    ('boom NULLS FIRST, bang, bop', [5, 2, 1, 3, 6, 4, 8, 7]),
+    ('boom NULLS LAST, bang, bop', [2, 1, 3, 6, 4, 8, 7, 5]),
+    ('boom ASC NULLS FIRST, bang, bop', [5, 2, 1, 3, 6, 4, 8, 7]),
+    ('boom ASC NULLS LAST, bang, bop', [2, 1, 3, 6, 4, 8, 7, 5]),
+    ('boom DESC NULLS FIRST, bang, bop', [5, 4, 8, 7, 2, 1, 3, 6]),
+    ('boom DESC NULLS LAST, bang, bop', [4, 8, 7, 2, 1, 3, 6, 5]),
+])
+def test_order_by(order_by, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.zap (
+            baz BIGINT,
+            bang TEXT,
+            boom TEXT,
+            bop BIGINT
+        );
+        INSERT INTO foo.zap (baz, bang, boom, bop) VALUES
+        (1, 'one', 'hera', 20),
+        (2, 'one', 'hera', 10),
+        (3, 'two', 'hera', 20),
+        (4, 'one', 'hermes', 20),
+        (5, 'one', NULL, 20),
+        (6, 'two', 'hera', 30),
+        (7, 'two', 'hermes', 20),
+        (8, 'two', 'hermes', 10);
+    """)
+    result = db.execute_one(f"""
+        SELECT baz FROM foo.zap ORDER BY {order_by};
+    """)
+    assert scalars(result.rows) == expected

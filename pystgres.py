@@ -131,6 +131,62 @@ class Function:
     fn = attr.ib()
 
 
+@attr.s(frozen=True, slots=True)
+class SortByStrategy:
+    _sortby_dir = attr.ib(repr=False)
+    _sortby_nulls = attr.ib(repr=False)
+    asc = attr.ib(init=False)
+    desc = attr.ib(init=False)
+    nulls_last = attr.ib(init=False)
+    nulls_first = attr.ib(init=False)
+
+    @asc.default
+    def _(self):
+        return self._sortby_dir != 2
+
+    @desc.default
+    def _(self):
+        return not self.asc
+
+    @nulls_last.default
+    def _(self):
+        if self._sortby_nulls == 0:
+            return self.asc
+        return self._sortby_nulls == 2
+
+    @nulls_first.default
+    def _(self):
+        return not self.nulls_last
+
+
+@attr.s(cmp=False)
+class SortByKey:
+    strat = attr.ib()
+    value = attr.ib()
+
+    def _cmp_compatible(self, other):
+        return (
+            type(other) == type(self)
+            and self.strat == other.strat
+        )
+
+    def __lt__(self, other):
+        if not self._cmp_compatible(other):
+            return NotImplemented
+        if self.value == other.value:
+            return False
+        if self.value is None:
+            return self.strat.nulls_first
+        if other.value is None:
+            return self.strat.nulls_last
+        return (self.value < other.value) == self.strat.asc
+
+    def __eq__(self, other):
+        if not self._cmp_compatible(other):
+            return NotImplemented
+        return self.value == other.value
+
+
 def create_pg_catalog():
     return Schema(functions={'length': Function(fn=len)})
 
@@ -373,18 +429,56 @@ class MockDatabase:
                 if where_expr.eval(row)
             )
 
-        result_rows = [
+        if statement.sort_clause:
+            strats = [
+                (
+                    SortByStrategy(
+                        sortby_dir=expr.sortby_dir,
+                        sortby_nulls=expr.sortby_nulls,
+                    ),
+                    self._get_sortby_element(expr.node, sources=from_sources),
+                )
+                for expr in statement.sort_clause
+            ]
+
+            rows = sorted(rows, key=lambda row: tuple(
+                SortByKey(
+                    strat=strat,
+                    value=element.eval(row),
+                )
+                for strat, element in strats
+            ))
+
+        result_rows = (
             [
                 source.eval(row)
                 for source in row_sources
             ]
             for row in rows
-        ]
+        )
 
         return ResultSet(
             row_names=row_names,
-            rows=result_rows,
+            rows=list(result_rows),
         )
+
+    def _get_sortby_element(self, expr, sources):
+        expr_type = type(expr).__name__
+        if expr_type == 'AConst':
+            const_type = type(expr.val).__name__
+            if const_type != 'Integer':
+                raise exc.PostgresSyntaxError("non-integer constant in ORDER BY")
+            raise NotImplementedError(expr_type)
+        elif expr_type == 'ColumnRef':
+            last = expr.fields[-1]
+            # I think the parser catches this as a syntax error.
+            assert not isinstance(last, psqlparse.nodes.AStar)
+            column = last.str
+            column_ref = [piece.str for piece in expr.fields[::-1]]
+            column_source = sources.get_column_source(*column_ref)
+            return Element(lambda row: row[column_source][column], name=column)
+        else:
+            raise NotImplementedError(expr_type)
 
     def _merge_rows(self, left_rows, right_rows):
         # TODO: basic join strategies?

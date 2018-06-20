@@ -48,3 +48,15 @@ class AmbiguousTableError(PostgresError):
 
 class InvalidEscapeSequence(PostgresError):
     error_code = '22025'
+
+
+class UndefinedFunctionError(PostgresError):
+    error_code = '42883'
+
+
+class InvalidSchemaNameError(PostgresError):
+    error_code = '3F000'
+
+
+class PostgresSyntaxError(PostgresError):
+    error_code = '42601'
