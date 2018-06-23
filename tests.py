@@ -1,3 +1,5 @@
+import collections
+
 import pytest
 
 import exc
@@ -6,6 +8,10 @@ import pystgres
 
 def scalars(iterable):
     return [elem for elem, in iterable]
+
+
+def equals_orderless(left, right):
+    return collections.Counter(left) == collections.Counter(right)
 
 
 def test_create_table():
@@ -55,10 +61,7 @@ def test_insert_defaults():
         INSERT INTO foo.bar (bang) VALUES ('hi'), ('hello');
     """)
     result = db.execute_one("SELECT * FROM foo.bar;")
-    assert result.rows == [
-        (1, 'hi'),
-        (2, 'hello'),
-    ]
+    assert equals_orderless(result.rows, [(1, 'hi'), (2, 'hello')])
 
 
 def test_simple_select():
@@ -79,7 +82,7 @@ def test_simple_select():
         SELECT 10 as zoom, bang FROM foo.bar;
     """)
 
-    assert result.rows == [(10, 'hi'), (10, 'hello')]
+    assert equals_orderless(result.rows, [(10, 'hi'), (10, 'hello')])
 
 
 def test_simple_join():
@@ -105,12 +108,12 @@ def test_simple_join():
     result = db.execute_one("""
         SELECT baz, bang, bam FROM foo.bar bob JOIN foo.zow ON baz = bar_baz;
     """)
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         (1, 'hi', 'one'),
         (2, 'hello', 'two'),
         (3, 'sup', 'three'),
         (4, 'salutations', 'four'),
-    ]
+    ])
 
 
 def test_length_fn():
@@ -127,11 +130,11 @@ def test_length_fn():
     result = db.execute_one("""
         SELECT baz, length(bang) FROM foo.bar;
     """)
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         (1, 2),
         (2, 3),
         (3, 3),
-    ]
+    ])
 
 
 @pytest.mark.xfail
@@ -149,11 +152,11 @@ def test_bare_star():
     result = db.execute_one("""
         SELECT * FROM foo.bar a JOIN foo.bar b ON a.baz = length(b.bang);
     """)
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         (2, 'bec', 1, 'ab'),
         (3, 'ked', 2, 'bec'),
         (3, 'ked', 3, 'ked'),
-    ]
+    ])
 
 
 @pytest.mark.xfail
@@ -178,11 +181,11 @@ def test_qualified_star():
         SELECT zap.data, bar.*, 'wow' wow FROM foo.bar JOIN foo.zap ON baz = id;
     """)
     assert results.row_names == ['data', 'baz', 'bang', 'wow']
-    assert results.rows == [
+    assert equals_orderless(results.rows, [
         ('huh', 1, 'one', 'wow'),
         ('neat', 2, 'two', 'wow'),
         ('cool', 3, 'three', 'wow'),
-    ]
+    ])
 
 
 def test_ambiguous_column():
@@ -303,7 +306,7 @@ def test_like_operator(expression, expected):
         (5, '%oops'), (6, 'ALRIGHT');
     """)
     result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang LIKE '{expression}';")
-    assert scalars(result.rows) == expected
+    assert equals_orderless(scalars(result.rows), expected)
 
 
 @pytest.mark.parametrize("expression,expected", [
@@ -326,7 +329,7 @@ def test_ilike_operator(expression, expected):
         (5, '%oops'), (6, 'ALRIGHT');
     """)
     result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang ILIKE '{expression}';")
-    assert scalars(result.rows) == expected
+    assert equals_orderless(scalars(result.rows), expected)
 
 
 @pytest.mark.xfail
@@ -347,7 +350,7 @@ def test_aggregation(column, expected):
     """)
 
     result = db.execute_one(f"SELECT {column} FROM foo.bar GROUP BY baz;")
-    assert scalars(result.rows) == expected
+    assert equals_orderless(scalars(result.rows), expected)
 
 
 @pytest.mark.xfail
@@ -368,7 +371,7 @@ def test_group_by_exprs(baz, group_by):
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
     result = db.execute(f"SELECT {baz}, count(*) FROM foo.bar GROUP BY {group_by};")
-    assert result.rows == [(1, 3), (2, 2), (3, 2)]
+    assert equals_orderless(result.rows, [(1, 3), (2, 2), (3, 2)])
 
 
 @pytest.mark.xfail
@@ -389,7 +392,7 @@ def test_group_by_ambiguous():
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
     result = db.execute("SELECT baz as zow, 1 as baz FROM foo.bar GROUP BY baz;")
-    assert result.rows == [(1, 1), (2, 1), (3, 1)]
+    assert equals_orderless(result.rows, [(1, 1), (2, 1), (3, 1)])
 
 
 @pytest.mark.xfail
@@ -410,12 +413,12 @@ def test_group_by_multi():
         (1, 'oh', 'neat', 'zounds');
     """)
     result = db.execute("SELECT a, b, c, count(*) FROM foo.alpha GROUP BY a, b, c;")
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         (1, 'hey', 'neat', 2),
         (2, 'hey', 'neat', 1),
         (1, 'hey', 'alright', 1),
         (1, 'oh', 'neat', 1),
-    ]
+    ])
 
 
 @pytest.mark.xfail
@@ -431,10 +434,10 @@ def test_group_by_expression():
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
     result = db.execute("SELECT bang LIKE '%a%', count(*) FROM foo.bar GROUP BY bang LIKE '%a%';")
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         (True, 3),
         (False, 4),
-    ]
+    ])
 
 
 def test_simple_where_clause():
@@ -478,7 +481,7 @@ def test_comma_join():
         INSERT INTO foo.bam (bing, zoop) VALUES (1, 'zip'), (2, 'zap'), (3, 'zam');
     """)
     result = db.execute_one("SELECT bang, zoop FROM foo.bar, foo.bam;")
-    assert result.rows == [
+    assert equals_orderless(result.rows, [
         ('ten', 'zip'),
         ('ten', 'zap'),
         ('ten', 'zam'),
@@ -488,7 +491,7 @@ def test_comma_join():
         ('twelve', 'zip'),
         ('twelve', 'zap'),
         ('twelve', 'zam'),
-    ]
+    ])
 
 
 @pytest.mark.parametrize('expr,expected', [
@@ -512,14 +515,14 @@ def test_setof_type():
     result = db.execute_one("""
         SELECT regexp_matches('4 8 15 16 23 42', '\d+', 'g');
     """)
-    assert scalars(result.rows) == [
+    assert equals_orderless(scalars(result.rows), [
         ('4',),
         ('8',),
         ('15',),
         ('16',),
         ('23',),
         ('42',),
-    ]
+    ])
 
 
 @pytest.mark.xfail
@@ -527,7 +530,7 @@ def test_double_setof():
     result = db.execute_one("""
         SELECT unnest(regexp_matches('2 5 11 23 47 95', '\d+', 'g'))::int;
     """)
-    assert scalars(result.rows) == [2, 5, 11, 23, 47, 95]
+    assert equals_orderless(scalars(result.rows), [2, 5, 11, 23, 47, 95])
 
 
 @pytest.mark.parametrize('order_by,expected', [
@@ -567,6 +570,7 @@ def test_order_by(order_by, expected):
     result = db.execute_one(f"""
         SELECT baz FROM foo.zap ORDER BY {order_by};
     """)
+    # Notably comparing order here
     assert scalars(result.rows) == expected
 
 
@@ -611,4 +615,21 @@ def test_join_types(join, expected):
     """)
 
     result = db.execute_one(f"SELECT one.id, two.id FROM one {join} two ON one.foo = two.foo;")
-    assert result.rows == expected
+    assert equals_orderless(result.rows, expected)
+
+
+def test_cant_just_counter():
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE one (
+            id BIGINT,
+            foo TEXT
+        );
+
+        INSERT INTO one (id, foo) VALUES
+        (1, 'whoops'), (2, 'oops'), (3, 'whoops');
+    """)
+    result = db.execute_one("SELECT foo FROM one ORDER BY id")
+    # Notably comparing order here
+    assert scalars(result.rows) == ['whoops', 'oops', 'whoops']

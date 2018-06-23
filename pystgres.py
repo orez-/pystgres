@@ -149,33 +149,10 @@ class Table:
         return type('Row', (AbstractRow,), {'columns': columns})
 
 
-class RowSet(frozendict):
-    dict_cls = collections.Counter
-
-    def __eq__(self, other):
-        return super().__eq__(RowSet(other))
-
-    def __hash__(self):
-        # Looks pointless, but python strips implicit hashes from classes
-        # with a custom __eq__ to prevent surprising dict/set lookup failures.
-
-        # In fact adding this may cause surprising behavior depending on
-        # what exactly you're expecting: this class's __eq__ seems to
-        # suggest this will return True, but there's no guarantee it will:
-
-        # 'abc' in {RowSet('abc')}
-
-        # It kind of sucks that __eq__'s meaning is overloaded like this
-        # in python! If you don't like it, write your local python core
-        # developer. Until then, avoid using this object in dicts/sets
-        # with heterogeneous keys/elements.
-        return super().__hash__()
-
-
 @attr.s(slots=True, frozen=True)
 class ResultSet:
     row_names = attr.ib()
-    rows = attr.ib(converter=RowSet)
+    rows = attr.ib(converter=list)
 
 
 class Element(typing.NamedTuple):
@@ -620,7 +597,7 @@ class MockDatabase:
 
         return ResultSet(
             row_names=row_names,
-            rows=list(result_rows),
+            rows=result_rows,
         )
 
     def _apply_sort_expr(self, *, sort_clause, rows, sources):
