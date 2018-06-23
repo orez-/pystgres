@@ -332,6 +332,52 @@ def test_ilike_operator(expression, expected):
     assert equals_orderless(scalars(result.rows), expected)
 
 
+@pytest.mark.parametrize("expression,expected", [
+    ('%a%', ['b', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    ('a%', ['b', 'za', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    ('%a', ['b', 'ab', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    ('a', ['b', 'ab', 'za', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    (r'\%%', ['a', 'b', 'ab', 'za', 'wow', 'c', 'huh', 'ALRIGHT']),
+])
+def test_not_like_operator(expression, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh'),
+        (5, '%oops'), (6, 'ALRIGHT');
+    """)
+    result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang NOT LIKE '{expression}';")
+    assert equals_orderless(scalars(result.rows), expected)
+
+
+@pytest.mark.parametrize("expression,expected", [
+    ('%a%', ['b', 'wow', 'c', 'huh', '%oops']),
+    ('a%', ['b', 'za', 'wow', 'c', 'huh', '%oops']),
+    ('%a', ['b', 'ab', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    ('a', ['b', 'ab', 'za', 'wow', 'c', 'huh', '%oops', 'ALRIGHT']),
+    (r'\%%', ['a', 'b', 'ab', 'za', 'wow', 'c', 'huh', 'ALRIGHT']),
+])
+def test_not_ilike_operator(expression, expected):
+    db = pystgres.MockDatabase()
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT,
+            bang TEXT
+        );
+
+        INSERT INTO foo.bar (baz, bang)
+        VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh'),
+        (5, '%oops'), (6, 'ALRIGHT');
+    """)
+    result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang NOT ILIKE '{expression}';")
+    assert equals_orderless(scalars(result.rows), expected)
+
+
 @pytest.mark.xfail
 @pytest.mark.parametrize("column,expected", [
     ('bang', [1, 2, 3]),

@@ -790,6 +790,12 @@ def ilike_operator(text, pattern):
     return bool(re.fullmatch(regex, text, re.IGNORECASE))
 
 
+@apply
+def not_(value):
+    """Decorator that boolean-negates the result of a function."""
+    return not value
+
+
 def _get_aexpr_op(symbol):
     operators = {
         '=': operator.__eq__,
@@ -803,6 +809,8 @@ def _get_aexpr_op(symbol):
         '-': operator.__sub__,
         '~~': like_operator,
         '~~*': ilike_operator,
+        '!~~': not_(like_operator),
+        '!~~*': not_(ilike_operator),
     }
     if symbol not in operators:
         raise NotImplementedError(symbol)
