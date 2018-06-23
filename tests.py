@@ -568,3 +568,47 @@ def test_order_by(order_by, expected):
         SELECT baz FROM foo.zap ORDER BY {order_by};
     """)
     assert scalars(result.rows) == expected
+
+
+_inner = [(1, 101), (1, 102), (2, 101), (2, 102)]
+_left = [(3, None), (4, None)]
+_right = [(None, 103), (None, 104)]
+@pytest.mark.parametrize('join,expected', [
+    ('JOIN', [*_inner]),
+    ('INNER JOIN', [*_inner]),
+    ('LEFT JOIN', [*_inner, *_left]),
+    ('LEFT OUTER JOIN', [*_inner, *_left]),
+    ('RIGHT JOIN', [*_inner, *_right]),
+    ('RIGHT OUTER JOIN', [*_inner, *_right]),
+    pytest.mark.xfail(('FULL JOIN', [*_inner, *_left, *_right])),
+    pytest.mark.xfail(('FULL OUTER JOIN', [*_inner, *_left, *_right])),
+])
+def test_join_types(join, expected):
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE one (
+            id BIGINT,
+            foo TEXT
+        );
+
+        CREATE TABLE two (
+            id BIGINT,
+            foo TEXT
+        );
+
+        INSERT INTO one (id, foo) VALUES
+        (1, 'baz'),
+        (2, 'baz'),
+        (3, 'bang'),
+        (4, 'bang');
+
+        INSERT INTO two (id, foo) VALUES
+        (101, 'baz'),
+        (102, 'baz'),
+        (103, 'boom'),
+        (104, 'boom');
+    """)
+
+    result = db.execute_one(f"SELECT one.id, two.id FROM one {join} two ON one.foo = two.foo;")
+    assert result.rows == expected

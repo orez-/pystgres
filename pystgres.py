@@ -96,7 +96,6 @@ def verify_implemented(psql_node, implemented_fields=(), *, expected_values=()):
 class AbstractRow(frozendict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._address_missing()
         self._address_extra()
 
     def _address_missing(self):
@@ -116,6 +115,10 @@ class AbstractRow(frozendict):
             raise exc.UndefinedColumnError(
                 f"column {first(extra)} of relation \"?\" does not exist"
             )
+
+    @classmethod
+    def null_row(cls):
+        return cls({col: None for col in cls.columns})
 
     def __getattr__(self, key):
         return self[key]
@@ -505,6 +508,12 @@ class QueryTables:  # XXX bad name
             return self._get_source_by_table(table_name)
         return self._get_source_by_qualified_table(schema_name, table_name)
 
+    def null_row(self):
+        return {
+            (table, alias): table.rowtype.null_row()
+            for table, alias in self.all_tables()
+        }
+
 
 class MockDatabase:
     def __init__(self):
@@ -565,6 +574,12 @@ class MockDatabase:
         self._db = self._db.update_table(table)
 
     def _handle_select_statement(self, statement):
+        verify_implemented(
+            statement,
+            ['from_clause', 'target_list', 'where_clause', 'sort_clause'],
+            # Not sure what op is.
+            expected_values={'op': 0, 'statement': 'SELECT'},
+        )
         from_sources = QueryTables()
         rows = [{}]
         for clause in statement.from_clause or ():
@@ -655,12 +670,58 @@ class MockDatabase:
             for right_row in right_rows
         )
 
-    def _merge_clauses(self, left_clause, right_clause):
-        left_sources, left_rows = self._parse_from_clauses(left_clause)
-        right_sources, right_rows = self._parse_from_clauses(right_clause)
-
-        sources = QueryTables.merge(left_sources, right_sources)
+    def _inner_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
         rows = self._merge_rows(left_rows, right_rows)
+        if quals_expr:
+            rows = filter(quals_expr.eval, rows)
+        return rows
+
+    def _left_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
+        right_rows = list(right_rows)
+        for left_row in left_rows:
+            lrow_used = False
+            for right_row in right_rows:
+                new_row = {**left_row, **right_row}
+                if quals_expr.eval(new_row):
+                    lrow_used = True
+                    yield new_row
+            if not lrow_used:
+                yield {**left_row, **right_sources.null_row()}
+
+    def _right_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
+        # Sneaky. Swap left and right.
+        return self._left_merge_rows(
+            left_rows=right_rows,
+            right_rows=left_rows,
+            left_sources=right_sources,
+            right_sources=left_sources,
+            quals_expr=quals_expr,
+        )
+
+    def _full_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
+        raise NotImplementedError("whoops")
+
+    def _merge_clauses(self, clause):
+        left_sources, left_rows = self._parse_from_clauses(clause.larg)
+        right_sources, right_rows = self._parse_from_clauses(clause.rarg)
+        sources = QueryTables.merge(left_sources, right_sources)
+
+        quals_expr = self._db.parse_select_expr(clause.quals, sources=sources)
+
+        join_fn = {
+            0: self._inner_merge_rows,
+            1: self._left_merge_rows,
+            2: self._full_merge_rows,
+            3: self._right_merge_rows,
+        }[clause.jointype]
+
+        rows = join_fn(
+            left_rows=left_rows,
+            right_rows=right_rows,
+            quals_expr=quals_expr,
+            left_sources=left_sources,
+            right_sources=right_sources,
+        )
         return sources, rows
 
     def _parse_from_clauses(self, clause):
@@ -672,16 +733,10 @@ class MockDatabase:
             rows = ({(table, alias): row} for row in table.rows)
             return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
-            sources, rows = self._merge_clauses(clause.larg, clause.rarg)
+            verify_implemented(clause, ['larg', 'rarg', 'quals', 'jointype'])
+            assert clause.quals  # not sure how this could be missing
 
-            if clause.quals:
-                quals_expr = self._db.parse_select_expr(clause.quals, sources=sources)
-                rows = (
-                    row for row in rows
-                    if quals_expr.eval(row)
-                )
-            else:
-                raise NotImplementedError(clause)
+            sources, rows = self._merge_clauses(clause)
 
             return sources, rows
         else:
@@ -690,7 +745,6 @@ class MockDatabase:
 
 def _debug(prefix, obj):
     v = dict(public_fields(obj))
-    # v.pop('_obj', None)
     print(prefix, type(obj), obj, v)
     print()
 
