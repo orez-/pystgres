@@ -60,3 +60,11 @@ class InvalidSchemaNameError(PostgresError):
 
 class PostgresSyntaxError(PostgresError):
     error_code = '42601'
+
+
+class UndefinedObjectError(PostgresError):
+    error_code = '42704'
+
+
+class InvalidTextRepresentationError(PostgresError):
+    error_code = '22P02'

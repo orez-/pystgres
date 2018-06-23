@@ -491,6 +491,21 @@ def test_comma_join():
     ]
 
 
+@pytest.mark.parametrize('expr,expected', [
+    ("'30'::INT", 30),
+    ("'t'::BOOL", True),
+    ("'tru'::BOOL", True),
+    ("'  true '::BOOL", True),
+    ("' fals '::BOOL", False),
+    ("tRuE::TEXT", 'true'),
+    ("30::text", '30'),
+])
+def test_cast(expr, expected):
+    db = pystgres.MockDatabase()
+    result = db.execute_one(f"SELECT {expr}")
+    assert scalars(result.rows) == [expected]
+
+
 @pytest.mark.xfail
 def test_setof_type():
     db = pystgres.MockDatabase()
@@ -498,13 +513,21 @@ def test_setof_type():
         SELECT regexp_matches('4 8 15 16 23 42', '\d+', 'g');
     """)
     assert result.rows == [
-        [(4,)],
-        [(8,)],
-        [(15,)],
-        [(16,)],
-        [(23,)],
-        [(42,)],
+        [('4',)],
+        [('8',)],
+        [('15',)],
+        [('16',)],
+        [('23',)],
+        [('42',)],
     ]
+
+
+@pytest.mark.xfail
+def test_double_setof():
+    result = db.execute_one("""
+        SELECT unnest(regexp_matches('2 5 11 23 47 95', '\d+', 'g'))::int;
+    """)
+    assert scalars(result.rows) == [2, 5, 11, 23, 47, 95]
 
 
 @pytest.mark.parametrize('order_by,expected', [

@@ -50,6 +50,49 @@ def apply(agg_fn):
     return decorator
 
 
+def is_descriptor(obj):
+    """Return True if obj is a descriptor, False otherwise."""
+    return (
+        hasattr(obj, '__get__') or
+        hasattr(obj, '__set__') or
+        hasattr(obj, '__delete__')
+    )
+
+
+def public_fields(obj):
+    """
+    Fetch the public, non-method fields and their values from an object.
+    """
+    return (
+        (field, getattr(obj, field))
+        for field in dir(obj)
+        if not field.startswith('_')
+        and not is_descriptor(getattr(obj, field))
+    )
+
+
+def verify_implemented(psql_node, implemented_fields=(), *, expected_values=()):
+    """
+    Raise NotImplementedError if psql_node has any unexpected non-None public fields.
+    """
+    expected_fields = {'location'}
+    implemented_fields = set(implemented_fields) | expected_fields
+    not_implemented_fields = [
+        (field, value)
+        for field, value in public_fields(psql_node)
+        if field not in implemented_fields
+        and (field not in expected_values or expected_values[field] != value)
+        and value is not None
+    ]
+    if not_implemented_fields:
+        raise NotImplementedError(
+            "{}({})".format(
+                type(psql_node).__name__,
+                ', '.join(f"{field}={value!r}" for field, value in not_implemented_fields)
+            )
+        )
+
+
 class AbstractRow(frozendict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -124,6 +167,7 @@ class Element(typing.NamedTuple):
 class Schema:
     tables = attr.ib(default=(), converter=frozendict)
     functions = attr.ib(default=(), converter=frozendict)
+    types = attr.ib(default=(), converter=frozendict)
 
 
 @attr.s(frozen=True, slots=True)
@@ -187,8 +231,60 @@ class SortByKey:
         return self.value == other.value
 
 
+@attr.s(frozen=True, slots=True)
+class PgType:
+    converter = attr.ib()
+    description = attr.ib()
+
+
 def create_pg_catalog():
-    return Schema(functions={'length': Function(fn=len)})
+    integer = PgType(
+        converter=int,
+        description="-2 billion to 2 billion integer, 4-byte storage",  # TODO: ha ha ha
+    )
+
+    def pg_bool(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            original = value
+            value = value.strip().lower()
+            if value:
+                if 'true'.startswith(value):
+                    return True
+                if 'false'.startswith(value):
+                    return False
+            raise InvalidTextRepresentationError(
+                f"invalid input syntax for type boolean: {original!r}"
+            )
+        if isinstance(value, int):
+            return bool(value)
+        raise NotImplementedError(type(value))
+
+
+    def pg_text(value):
+        if value is None or isinstance(value, str):
+            return value
+        if value in (True, False):
+            return str(value).lower()
+        return str(value)
+
+
+    return Schema(
+        functions={'length': Function(fn=len)},
+        types={
+            'bool': PgType(
+                converter=pg_bool,
+                description="boolean, 'true'/'false'",
+            ),
+            'integer': integer,
+            'int4': integer,
+            'text': PgType(
+                converter=pg_text,
+                description="variable-length string, no limit specified",
+            ),
+        },
+    )
 
 
 @attr.s(frozen=True, slots=True)
@@ -250,7 +346,23 @@ class Database:
             operation = _get_aexpr_op(expr.name[0].val)
             return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
         elif expr_type == 'TypeCast':
-            return self.parse_select_expr(expr.arg, sources)
+            verify_implemented(expr, ['arg', 'type_name'])
+            verify_implemented(
+                expr.type_name,
+                ['names'],
+                # I don't really understand what typemod is.
+                # https://doxygen.postgresql.org/format__type_8c_source.html
+                expected_values={'typemod': -1},
+            )
+            type_name = expr.type_name.names[-1].str
+            type_ref = [name.str for name in expr.type_name.names[::-1]]
+            pgtype = self._get_type(*type_ref)
+            elem = self.parse_select_expr(expr.arg, sources)
+            return Element(
+                lambda row: pgtype.converter(elem.eval(row)),
+                name=type_name,
+            )
+
         elif expr_type == 'FuncCall':
             func_ref = [piece.str for piece in expr.funcname[::-1]]
             func = self._get_function(*func_ref)
@@ -262,18 +374,35 @@ class Database:
         else:
             raise NotImplementedError(expr_type)
 
+    def _get_schema(self, schema_name):
+        if schema_name not in self.schemas:
+            raise InvalidSchemaNameError(f"schema {schema_name!r} does not exist")
+        return self.schemas[schema_name]
+
     def _get_function(self, func_name, schema_name=None):
-        if schema_name is not None:
-            if schema_name not in self.schemas:
-                raise InvalidSchemaNameError(f"schema {schema_name!r} does not exist")
-            if func_name not in self.schemas[schema_name].functions:
-                raise UndefinedFunctionError(
-                    f"function {schema_name}.{func_name}() does not exist"
-                )
-            return self.schemas[schema_name].functions[func_name]
-        if func_name not in self.schemas['pg_catalog'].functions:
-            raise exc.UndefinedFunctionError(f"function {func_name}() does not exist")
-        return self.schemas['pg_catalog'].functions[func_name]
+        if schema_name is None:
+            display_name = func_name
+            schema_name = 'pg_catalog'
+        else:
+            display_name = f"{schema_name}.{func_name}"
+
+        schema = self._get_schema(schema_name)
+        if func_name not in schema.functions:
+            raise UndefinedFunctionError(
+                f"function {display_name}() does not exist"
+            )
+        return schema.functions[func_name]
+
+    def _get_type(self, type_name, schema_name=None):
+        if schema_name is None:
+            display_name = type_name
+            schema_name = 'pg_catalog'
+        else:
+            display_name = f"{schema_name}.{type_name}"
+        schema = self._get_schema(schema_name)
+        if type_name not in schema.types:
+            raise exc.UndefinedObjectError(f'type "{display_name}" does not exist')
+        return schema.types[type_name]
 
 
 @attr.s(slots=True)
@@ -530,7 +659,7 @@ class MockDatabase:
 
 
 def _debug(prefix, obj):
-    v = dir(obj)
+    v = dict(public_fields(obj))
     # v.pop('_obj', None)
     print(prefix, type(obj), obj, v)
     print()
