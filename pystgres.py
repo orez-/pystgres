@@ -160,10 +160,15 @@ class Element(typing.NamedTuple):
     name: str = None
 
     def eval(self, row):
-        try:
-            return self.value(row)
-        except TypeError:
-            return self.value
+        return self.value(row)
+
+
+class Constant(typing.NamedTuple):
+    value: typing.Any
+    name: str = None
+
+    def eval(self, row):
+        return self.value
 
 
 @attr.s(frozen=True, slots=True)
@@ -334,7 +339,7 @@ class Database:
     def parse_select_expr(self, expr, sources=None):
         expr_type = type(expr).__name__
         if expr_type == 'AConst':
-            return Element(expr.val.val)
+            return Constant(expr.val.val)
         elif expr_type == 'ColumnRef':
             last = expr.fields[-1]
             if isinstance(last, psqlparse.nodes.AStar):
