@@ -584,8 +584,8 @@ _right = [(None, 103), (None, 104)]
     ('LEFT OUTER JOIN', [*_inner, *_left]),
     ('RIGHT JOIN', [*_inner, *_right]),
     ('RIGHT OUTER JOIN', [*_inner, *_right]),
-    pytest.mark.xfail(('FULL JOIN', [*_inner, *_left, *_right])),
-    pytest.mark.xfail(('FULL OUTER JOIN', [*_inner, *_left, *_right])),
+    ('FULL JOIN', [*_inner, *_left, *_right]),
+    ('FULL OUTER JOIN', [*_inner, *_left, *_right]),
 ])
 def test_join_types(join, expected):
     db = pystgres.MockDatabase()

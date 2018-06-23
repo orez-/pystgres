@@ -647,7 +647,7 @@ class MockDatabase:
         # TODO: basic join strategies?
         right_rows = list(right_rows)
         return (
-            {**left_row, **right_row}
+            frozendict({**left_row, **right_row})
             for left_row in left_rows
             for right_row in right_rows
         )
@@ -681,7 +681,20 @@ class MockDatabase:
         )
 
     def _full_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
-        raise NotImplementedError("whoops")
+        right_rows = list(right_rows)
+        missing_right = set(right_rows)
+        for left_row in left_rows:
+            lrow_used = False
+            for right_row in right_rows:
+                new_row = {**left_row, **right_row}
+                if quals_expr.eval(new_row):
+                    missing_right.discard(right_row)
+                    lrow_used = True
+                    yield new_row
+            if not lrow_used:
+                yield {**left_row, **right_sources.null_row()}
+        for right_row in missing_right:
+            yield {**left_sources.null_row(), **right_row}
 
     def _merge_clauses(self, clause):
         left_sources, left_rows = self._parse_from_clauses(clause.larg)
@@ -697,13 +710,13 @@ class MockDatabase:
             3: self._right_merge_rows,
         }[clause.jointype]
 
-        rows = join_fn(
+        rows = map(frozendict, join_fn(
             left_rows=left_rows,
             right_rows=right_rows,
             quals_expr=quals_expr,
             left_sources=left_sources,
             right_sources=right_sources,
-        )
+        ))
         return sources, rows
 
     def _parse_from_clauses(self, clause):
@@ -712,7 +725,7 @@ class MockDatabase:
             table = self._db._get_table(clause.relname, schema_name=clause.schemaname)
             alias = clause.alias.aliasname if clause.alias else None
             from_source.add(table=table, alias=alias)
-            rows = ({(table, alias): row} for row in table.rows)
+            rows = (frozendict({(table, alias): row}) for row in table.rows)
             return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
             verify_implemented(clause, ['larg', 'rarg', 'quals', 'jointype'])
