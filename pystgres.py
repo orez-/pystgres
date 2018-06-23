@@ -566,24 +566,11 @@ class MockDatabase:
             )
 
         if statement.sort_clause:
-            strats = [
-                (
-                    SortByStrategy(
-                        sortby_dir=expr.sortby_dir,
-                        sortby_nulls=expr.sortby_nulls,
-                    ),
-                    self._get_sortby_element(expr.node, sources=from_sources),
-                )
-                for expr in statement.sort_clause
-            ]
-
-            rows = sorted(rows, key=lambda row: tuple(
-                SortByKey(
-                    strat=strat,
-                    value=element.eval(row),
-                )
-                for strat, element in strats
-            ))
+            rows = self._apply_sort_expr(
+                sort_clause=statement.sort_clause,
+                rows=rows,
+                sources=from_sources,
+            )
 
         result_rows = (
             [
@@ -597,6 +584,26 @@ class MockDatabase:
             row_names=row_names,
             rows=list(result_rows),
         )
+
+    def _apply_sort_expr(self, *, sort_clause, rows, sources):
+        strats = [
+            (
+                SortByStrategy(
+                    sortby_dir=expr.sortby_dir,
+                    sortby_nulls=expr.sortby_nulls,
+                ),
+                self._get_sortby_element(expr.node, sources=sources),
+            )
+            for expr in sort_clause
+        ]
+
+        return sorted(rows, key=lambda row: tuple(
+            SortByKey(
+                strat=strat,
+                value=element.eval(row),
+            )
+            for strat, element in strats
+        ))
 
     def _get_sortby_element(self, expr, sources):
         expr_type = type(expr).__name__
