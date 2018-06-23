@@ -56,8 +56,8 @@ def test_insert_defaults():
     """)
     result = db.execute_one("SELECT * FROM foo.bar;")
     assert result.rows == [
-        [1, 'hi'],
-        [2, 'hello'],
+        (1, 'hi'),
+        (2, 'hello'),
     ]
 
 
@@ -79,7 +79,7 @@ def test_simple_select():
         SELECT 10 as zoom, bang FROM foo.bar;
     """)
 
-    assert result.rows == [[10, 'hi'], [10, 'hello']]
+    assert result.rows == [(10, 'hi'), (10, 'hello')]
 
 
 def test_simple_join():
@@ -106,10 +106,10 @@ def test_simple_join():
         SELECT baz, bang, bam FROM foo.bar bob JOIN foo.zow ON baz = bar_baz;
     """)
     assert result.rows == [
-        [1, 'hi', 'one'],
-        [2, 'hello', 'two'],
-        [3, 'sup', 'three'],
-        [4, 'salutations', 'four'],
+        (1, 'hi', 'one'),
+        (2, 'hello', 'two'),
+        (3, 'sup', 'three'),
+        (4, 'salutations', 'four'),
     ]
 
 
@@ -128,9 +128,9 @@ def test_length_fn():
         SELECT baz, length(bang) FROM foo.bar;
     """)
     assert result.rows == [
-        [1, 2],
-        [2, 3],
-        [3, 3],
+        (1, 2),
+        (2, 3),
+        (3, 3),
     ]
 
 
@@ -150,9 +150,9 @@ def test_bare_star():
         SELECT * FROM foo.bar a JOIN foo.bar b ON a.baz = length(b.bang);
     """)
     assert result.rows == [
-        [2, 'bec', 1, 'ab'],
-        [3, 'ked', 2, 'bec'],
-        [3, 'ked', 3, 'ked'],
+        (2, 'bec', 1, 'ab'),
+        (3, 'ked', 2, 'bec'),
+        (3, 'ked', 3, 'ked'),
     ]
 
 
@@ -179,9 +179,9 @@ def test_qualified_star():
     """)
     assert results.row_names == ['data', 'baz', 'bang', 'wow']
     assert results.rows == [
-        ['huh', 1, 'one', 'wow'],
-        ['neat', 2, 'two', 'wow'],
-        ['cool', 3, 'three', 'wow'],
+        ('huh', 1, 'one', 'wow'),
+        ('neat', 2, 'two', 'wow'),
+        ('cool', 3, 'three', 'wow'),
     ]
 
 
@@ -224,7 +224,7 @@ def test_explicit_table():
     result = db.execute_one("""
         SELECT bar.baz FROM foo.bar JOIN bow.bom ON true;
     """)
-    assert result.rows == [[1]]
+    assert scalars(result.rows) == [1]
 
 
 def test_explicit_schema():
@@ -246,7 +246,7 @@ def test_explicit_schema():
     result = db.execute_one("""
         SELECT foo.bar.baz FROM foo.bar JOIN bow.bar ON true;
     """)
-    assert result.rows == [[10]]
+    assert scalars(result.rows) == [10]
 
 
 def test_duplicate_aliases():
@@ -284,11 +284,11 @@ def test_not_duplicate_aliases(query):
 
 
 @pytest.mark.parametrize("expression,expected", [
-    ('%a%', [['a'], ['ab'], ['za']]),
-    ('a%', [['a'], ['ab']]),
-    ('%a', [['a'], ['za']]),
-    ('a', [['a']]),
-    (r'\%%', [['%oops']]),
+    ('%a%', ['a', 'ab', 'za']),
+    ('a%', ['a', 'ab']),
+    ('%a', ['a', 'za']),
+    ('a', ['a']),
+    (r'\%%', ['%oops']),
 ])
 def test_like_operator(expression, expected):
     db = pystgres.MockDatabase()
@@ -303,15 +303,15 @@ def test_like_operator(expression, expected):
         (5, '%oops'), (6, 'ALRIGHT');
     """)
     result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang LIKE '{expression}';")
-    assert result.rows == expected
+    assert scalars(result.rows) == expected
 
 
 @pytest.mark.parametrize("expression,expected", [
-    ('%a%', [['a'], ['ab'], ['za'], ['ALRIGHT']]),
-    ('a%', [['a'], ['ab'], ['ALRIGHT']]),
-    ('%a', [['a'], ['za']]),
-    ('a', [['a']]),
-    (r'\%%', [['%oops']]),
+    ('%a%', ['a', 'ab', 'za', 'ALRIGHT']),
+    ('a%', ['a', 'ab', 'ALRIGHT']),
+    ('%a', ['a', 'za']),
+    ('a', ['a']),
+    (r'\%%', ['%oops']),
 ])
 def test_ilike_operator(expression, expected):
     db = pystgres.MockDatabase()
@@ -326,13 +326,13 @@ def test_ilike_operator(expression, expected):
         (5, '%oops'), (6, 'ALRIGHT');
     """)
     result = db.execute_one(f"SELECT bang FROM foo.bar WHERE bang ILIKE '{expression}';")
-    assert result.rows == expected
+    assert scalars(result.rows) == expected
 
 
 @pytest.mark.xfail
 @pytest.mark.parametrize("column,expected", [
-    ('bang', [[1], [2], [3]]),
-    ('array_agg(bang)', [[('a', 'b', 'c')], [('ab', 'za')], [('wow', 'huh')]]),
+    ('bang', [1, 2, 3]),
+    ('array_agg(bang)', [('a', 'b', 'c'), ('ab', 'za'), ('wow', 'huh')]),
 ])
 def test_aggregation(column, expected):
     db = pystgres.MockDatabase()
@@ -347,7 +347,7 @@ def test_aggregation(column, expected):
     """)
 
     result = db.execute_one(f"SELECT {column} FROM foo.bar GROUP BY baz;")
-    assert result.rows == expected
+    assert scalars(result.rows) == expected
 
 
 @pytest.mark.xfail
@@ -368,7 +368,7 @@ def test_group_by_exprs(baz, group_by):
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
     result = db.execute(f"SELECT {baz}, count(*) FROM foo.bar GROUP BY {group_by};")
-    assert result.rows == [[1, 3], [2, 2], [3, 2]]
+    assert result.rows == [(1, 3), (2, 2), (3, 2)]
 
 
 @pytest.mark.xfail
@@ -389,7 +389,7 @@ def test_group_by_ambiguous():
         VALUES (1, 'a'), (1, 'b'), (2, 'ab'), (2, 'za'), (3, 'wow'), (1, 'c'), (3, 'huh');
     """)
     result = db.execute("SELECT baz as zow, 1 as baz FROM foo.bar GROUP BY baz;")
-    assert result.rows == [[1, 1], [2, 1], [3, 1]]
+    assert result.rows == [(1, 1), (2, 1), (3, 1)]
 
 
 @pytest.mark.xfail
@@ -411,10 +411,10 @@ def test_group_by_multi():
     """)
     result = db.execute("SELECT a, b, c, count(*) FROM foo.alpha GROUP BY a, b, c;")
     assert result.rows == [
-        [1, 'hey', 'neat', 2],
-        [2, 'hey', 'neat', 1],
-        [1, 'hey', 'alright', 1],
-        [1, 'oh', 'neat', 1],
+        (1, 'hey', 'neat', 2),
+        (2, 'hey', 'neat', 1),
+        (1, 'hey', 'alright', 1),
+        (1, 'oh', 'neat', 1),
     ]
 
 
@@ -432,8 +432,8 @@ def test_group_by_expression():
     """)
     result = db.execute("SELECT bang LIKE '%a%', count(*) FROM foo.bar GROUP BY bang LIKE '%a%';")
     assert result.rows == [
-        [True, 3],
-        [False, 4],
+        (True, 3),
+        (False, 4),
     ]
 
 
@@ -448,19 +448,19 @@ def test_simple_where_clause():
     """)
 
     result = db.execute_one("SELECT baz, bang FROM foo.bar WHERE baz = 11;")
-    assert result.rows == [[11, 'eleven']]
+    assert result.rows == [(11, 'eleven')]
 
 
 def test_no_from():
     db = pystgres.MockDatabase()
     result = db.execute_one("SELECT 1, 'wow';")
-    assert result.rows == [[1, 'wow']]
+    assert result.rows == [(1, 'wow')]
 
 
 def test_empty_select():
     db = pystgres.MockDatabase()
     result = db.execute_one("SELECT;")
-    assert result.rows == [[]]
+    assert result.rows == [()]
 
 
 def test_comma_join():
@@ -479,15 +479,15 @@ def test_comma_join():
     """)
     result = db.execute_one("SELECT bang, zoop FROM foo.bar, foo.bam;")
     assert result.rows == [
-        ['ten', 'zip'],
-        ['ten', 'zap'],
-        ['ten', 'zam'],
-        ['eleven', 'zip'],
-        ['eleven', 'zap'],
-        ['eleven', 'zam'],
-        ['twelve', 'zip'],
-        ['twelve', 'zap'],
-        ['twelve', 'zam'],
+        ('ten', 'zip'),
+        ('ten', 'zap'),
+        ('ten', 'zam'),
+        ('eleven', 'zip'),
+        ('eleven', 'zap'),
+        ('eleven', 'zam'),
+        ('twelve', 'zip'),
+        ('twelve', 'zap'),
+        ('twelve', 'zam'),
     ]
 
 
@@ -512,13 +512,13 @@ def test_setof_type():
     result = db.execute_one("""
         SELECT regexp_matches('4 8 15 16 23 42', '\d+', 'g');
     """)
-    assert result.rows == [
-        [('4',)],
-        [('8',)],
-        [('15',)],
-        [('16',)],
-        [('23',)],
-        [('42',)],
+    assert scalars(result.rows) == [
+        ('4',),
+        ('8',),
+        ('15',),
+        ('16',),
+        ('23',),
+        ('42',),
     ]
 
 
