@@ -525,7 +525,7 @@ class MockDatabase:
 
     def _handle_create_statement(self, statement):
         relation_data = statement.relation
-        column_data = statement.table_elts
+        column_data = statement.table_elts or []
 
         table = Table(
             schema=relation_data.schemaname if relation_data.schemaname is not None else 'public',
@@ -701,6 +701,9 @@ class MockDatabase:
         right_sources, right_rows = self._parse_from_clauses(clause.rarg)
         sources = QueryTables.merge(left_sources, right_sources)
 
+        if not clause.quals:  # cross join
+            assert clause.jointype == 0, clause.jointype  # i think you can only inner cross-join
+            return sources, self._merge_rows(left_rows, right_rows)
         quals_expr = self._db.parse_select_expr(clause.quals, sources=sources)
 
         join_fn = {
@@ -729,11 +732,7 @@ class MockDatabase:
             return from_source, rows
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
             verify_implemented(clause, ['larg', 'rarg', 'quals', 'jointype'])
-            assert clause.quals  # not sure how this could be missing
-
-            sources, rows = self._merge_clauses(clause)
-
-            return sources, rows
+            return self._merge_clauses(clause)
         else:
             raise NotImplementedError(type(clause))
 

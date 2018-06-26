@@ -32,6 +32,8 @@ def test_create_table():
             zippy TEXT,
             zloop TEXT
         );
+
+        CREATE TABLE foo.empty ();
     """)
 
 
@@ -662,6 +664,24 @@ def test_join_types(join, expected):
 
     result = db.execute_one(f"SELECT one.id, two.id FROM one {join} two ON one.foo = two.foo;")
     assert equals_orderless(result.rows, expected)
+
+
+def test_crossjoin():
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE foo (one BIGINT);
+        CREATE TABLE bar (two BIGINT);
+        INSERT INTO foo (one) VALUES (1), (2), (3);
+        INSERT INTO bar (two) VALUES (4), (5), (6);
+    """)
+
+    result = db.execute_one("SELECT one, two FROM foo CROSS JOIN bar")
+    assert equals_orderless(result.rows, [
+        (1, 4), (1, 5), (1, 6),
+        (2, 4), (2, 5), (2, 6),
+        (3, 4), (3, 5), (3, 6),
+    ])
 
 
 def test_cant_just_counter():
