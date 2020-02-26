@@ -168,6 +168,7 @@ class Constant(typing.NamedTuple):
     name: str = None
 
     def eval(self, row):
+        del row
         return self.value
 
 
@@ -217,6 +218,9 @@ class SortByKey:
     value = attr.ib()
 
     def _cmp_compatible(self, other):
+        """
+        Return if `self` is comparable to `other`.
+        """
         return (
             type(other) == type(self)
             and self.strat == other.strat
@@ -338,49 +342,58 @@ class Database:
 
     def parse_select_expr(self, expr, sources=None):
         expr_type = type(expr).__name__
-        if expr_type == 'AConst':
-            return Constant(expr.val.val)
-        elif expr_type == 'ColumnRef':
-            last = expr.fields[-1]
-            if isinstance(last, psqlparse.nodes.AStar):
-                raise NotImplementedError()
-            column = last.str
-            column_ref = [piece.str for piece in expr.fields[::-1]]
-            column_source = sources.get_column_source(*column_ref)
-            return Element(lambda row: row[column_source][column], name=column)
-        elif expr_type == 'AExpr':
-            left_element = self.parse_select_expr(expr.lexpr, sources)
-            right_element = self.parse_select_expr(expr.rexpr, sources)
-            operation = _get_aexpr_op(expr.name[0].val)
-            return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
-        elif expr_type == 'TypeCast':
-            verify_implemented(expr, ['arg', 'type_name'])
-            verify_implemented(
-                expr.type_name,
-                ['names'],
-                # I don't really understand what typemod is.
-                # https://doxygen.postgresql.org/format__type_8c_source.html
-                expected_values={'typemod': -1},
-            )
-            type_name = expr.type_name.names[-1].str
-            type_ref = [name.str for name in expr.type_name.names[::-1]]
-            pgtype = self._get_type(*type_ref)
-            elem = self.parse_select_expr(expr.arg, sources)
-            return Element(
-                lambda row: pgtype.converter(elem.eval(row)),
-                name=type_name,
-            )
-
-        elif expr_type == 'FuncCall':
-            func_ref = [piece.str for piece in expr.funcname[::-1]]
-            func = self._get_function(*func_ref)
-            args = [self.parse_select_expr(arg, sources) for arg in expr.args]
-            return Element(
-                lambda row: func.fn(*(arg.eval(row) for arg in args)),
-                name=expr.funcname[-1].str,
-            )
-        else:
+        expr_method = {
+            'AConst': lambda expr, sources: Constant(expr.val.val),
+            'ColumnRef': self._parse_select_column_ref,
+            'AExpr': self._parse_select_aexpr,
+            'TypeCast': self._parse_select_typecast,
+            'FuncCall': self._parse_select_funccall,
+        }.get(expr_type)
+        if not expr_method:
             raise NotImplementedError(expr_type)
+        return expr_method(expr=expr, sources=sources)
+
+    def _parse_select_column_ref(self, expr, sources):
+        last = expr.fields[-1]
+        if isinstance(last, psqlparse.nodes.AStar):
+            raise NotImplementedError()
+        column = last.str
+        column_ref = [piece.str for piece in expr.fields[::-1]]
+        column_source = sources.get_column_source(*column_ref)
+        return Element(lambda row: row[column_source][column], name=column)
+
+    def _parse_select_aexpr(self, expr, sources):
+        left_element = self.parse_select_expr(expr.lexpr, sources)
+        right_element = self.parse_select_expr(expr.rexpr, sources)
+        operation = _get_aexpr_op(expr.name[0].val)
+        return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
+
+    def _parse_select_typecast(self, expr, sources):
+        verify_implemented(expr, ['arg', 'type_name'])
+        verify_implemented(
+            expr.type_name,
+            ['names'],
+            # I don't really understand what typemod is.
+            # https://doxygen.postgresql.org/format__type_8c_source.html
+            expected_values={'typemod': -1},
+        )
+        type_name = expr.type_name.names[-1].str
+        type_ref = [name.str for name in expr.type_name.names[::-1]]
+        pgtype = self._get_type(*type_ref)
+        elem = self.parse_select_expr(expr.arg, sources)
+        return Element(
+            lambda row: pgtype.converter(elem.eval(row)),
+            name=type_name,
+        )
+
+    def _parse_select_funccall(self, expr, sources):
+        func_ref = [piece.str for piece in expr.funcname[::-1]]
+        func = self._get_function(*func_ref)
+        args = [self.parse_select_expr(arg, sources) for arg in expr.args]
+        return Element(
+            lambda row: func.fn(*(arg.eval(row) for arg in args)),
+            name=expr.funcname[-1].str,
+        )
 
     def _get_schema(self, schema_name):
         if schema_name not in self.schemas:
@@ -653,12 +666,14 @@ class MockDatabase:
         )
 
     def _inner_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
+        del left_sources, right_sources
         rows = self._merge_rows(left_rows, right_rows)
         if quals_expr:
             rows = filter(quals_expr.eval, rows)
         return rows
 
     def _left_merge_rows(self, left_rows, right_rows, quals_expr, left_sources, right_sources):
+        del left_sources
         right_rows = list(right_rows)
         for left_row in left_rows:
             lrow_used = False
@@ -876,7 +891,8 @@ def repl():
                 print("ERROR: ", psql_exc)
                 print("LINE 1:", query)
                 print("     ", " " * psql_exc.cursorpos, "^")
-            except Exception:
+            # Catch everything and print it instead of crashing the repl.
+            except Exception:  # pylint: disable=broad-except
                 traceback.print_exc()
     except EOFError:
         pass
