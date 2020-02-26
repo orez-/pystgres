@@ -2,6 +2,7 @@ from __future__ import generator_stop
 
 import collections
 import functools
+import math
 import numbers
 import operator
 import re
@@ -346,6 +347,7 @@ class Database:
             'AConst': lambda expr, sources: Constant(expr.val.val),
             'ColumnRef': self._parse_select_column_ref,
             'AExpr': self._parse_select_aexpr,
+            'BoolExpr': self._parse_select_boolexpr,
             'TypeCast': self._parse_select_typecast,
             'FuncCall': self._parse_select_funccall,
         }.get(expr_type)
@@ -363,9 +365,52 @@ class Database:
         return Element(lambda row: row[column_source][column], name=column)
 
     def _parse_select_aexpr(self, expr, sources):
+        if expr.lexpr is None:
+            return self._parse_prefix_aexpr(expr, sources)
+        if expr.rexpr is None:
+            return self._parse_postfix_aexpr(expr, sources)
+        return self._parse_binary_aexpr(expr, sources)
+
+    def _parse_select_boolexpr(self, expr, sources):
+        # TODO: might wanna emulate postgres's strict boolean typechecking
+        bool_fn = {
+            0: self._parse_bool_and,
+            1: self._parse_bool_or,
+            2: self._parse_bool_not,
+        }[expr.boolop]
+        return bool_fn(expr, sources)
+
+    def _parse_bool_and(self, expr, sources):
+        left, right = expr.args
+        left_element = self.parse_select_expr(left, sources)
+        right_element = self.parse_select_expr(right, sources)
+        return Element(lambda row: left_element.eval(row) and right_element.eval(row))
+
+    def _parse_bool_or(self, expr, sources):
+        left, right = expr.args
+        left_element = self.parse_select_expr(left, sources)
+        right_element = self.parse_select_expr(right, sources)
+        return Element(lambda row: left_element.eval(row) or right_element.eval(row))
+
+    def _parse_bool_not(self, expr, sources):
+        [subexpr] = expr.args
+        element = self.parse_select_expr(subexpr, sources)
+        return Element(lambda row: not element.eval(row))
+
+    def _parse_prefix_aexpr(self, expr, sources):
+        right_element = self.parse_select_expr(expr.rexpr, sources)
+        operation = _get_prefix_aexpr_op(expr.name[0].val)
+        return Element(lambda row: operation(right_element.eval(row)))
+
+    def _parse_postfix_aexpr(self, expr, sources):
+        left_element = self.parse_select_expr(expr.lexpr, sources)
+        operation = _get_postfix_aexpr_op(expr.name[0].val)
+        return Element(lambda row: operation(left_element.eval(row)))
+
+    def _parse_binary_aexpr(self, expr, sources):
         left_element = self.parse_select_expr(expr.lexpr, sources)
         right_element = self.parse_select_expr(expr.rexpr, sources)
-        operation = _get_aexpr_op(expr.name[0].val)
+        operation = _get_binary_aexpr_op(expr.name[0].val)
         return Element(lambda row: operation(left_element.eval(row), right_element.eval(row)))
 
     def _parse_select_typecast(self, expr, sources):
@@ -810,7 +855,7 @@ def not_(value):
     return not value
 
 
-def _get_aexpr_op(symbol):
+def _get_binary_aexpr_op(symbol):
     operators = {
         '=': operator.__eq__,
         '<>': operator.__ne__,
@@ -821,10 +866,62 @@ def _get_aexpr_op(symbol):
         '<=': operator.__le__,
         '+': operator.__add__,
         '-': operator.__sub__,
+        '*': operator.__mul__,
+        '/': operator.__truediv__,  # wait, crap.
+        '%': operator.__mod__,
+        '^': pow,
         '~~': like_operator,
         '~~*': ilike_operator,
         '!~~': not_(like_operator),
         '!~~*': not_(ilike_operator),
+    }
+    if symbol not in operators:
+        raise NotImplementedError(symbol)
+    return operators[symbol]
+
+
+def _unary_negate(value):
+    if isinstance(value, bool) or not hasattr(value, '__neg__'):
+        raise exc.UndefinedFunctionError(
+            f"operator does not exist: - {type(value).__name__}",
+        )
+    return -value
+
+
+def _unary_posate(value):
+    if isinstance(value, bool) or not hasattr(value, '__pos__'):
+        raise exc.UndefinedFunctionError(
+            f"operator does not exist: + {type(value).__name__}",
+        )
+    return +value
+
+
+def _unary_invert(value):
+    if isinstance(value, bool) or not hasattr(value, '__invert__'):
+        raise exc.UndefinedFunctionError(
+            f"operator does not exist: ~ {type(value).__name__}",
+        )
+    return ~value
+
+
+def _get_prefix_aexpr_op(symbol):
+    operators = {
+        '-': _unary_negate,
+        '+': _unary_posate,
+        '~': _unary_invert,
+        '@': abs,
+        '!!': math.factorial,
+        '|/': math.sqrt,
+        '||/': lambda value: value ** (1 / 3),
+    }
+    if symbol not in operators:
+        raise NotImplementedError(symbol)
+    return operators[symbol]
+
+
+def _get_postfix_aexpr_op(symbol):
+    operators = {
+        '!': math.factorial,
     }
     if symbol not in operators:
         raise NotImplementedError(symbol)
@@ -839,6 +936,11 @@ QUERY_HANDLERS = {
 
 
 # ---
+
+def _format_result(elem):
+    if isinstance(elem, bool):
+        return 't' if elem else 'f'
+    return str(elem)
 
 
 def _print_result(result):
@@ -857,7 +959,7 @@ def _print_result(result):
         print('+'.join('-' * (width + PADDING * 2) for width in column_widths))
         for row in result.rows:
             print('|'.join(
-                f'{" " * PADDING}{elem:{_align(elem)}{width}}{" " * PADDING}'
+                f'{" " * PADDING}{_format_result(elem):{_align(elem)}{width}}{" " * PADDING}'
                 for width, elem in zip(column_widths, row)
             ))
     else:
@@ -867,6 +969,8 @@ def _print_result(result):
 
 
 def _align(elem):
+    if isinstance(elem, bool):
+        return '<'
     return '>' if isinstance(elem, numbers.Number) else '<'
 
 

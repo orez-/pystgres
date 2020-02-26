@@ -46,6 +46,10 @@ class AmbiguousTableError(PostgresError):
     error_code = '42P09'
 
 
+class DivisionByZero(PostgresError):
+    error_code = '22012'
+
+
 class InvalidEscapeSequence(PostgresError):
     error_code = '22025'
 

@@ -10,6 +10,11 @@ def scalars(iterable):
     return [elem for elem, in iterable]
 
 
+def scalar(rows):
+    [scalar] = scalars(rows)
+    return scalar
+
+
 def equals_orderless(left, right):
     return collections.Counter(left) == collections.Counter(right)
 
@@ -229,7 +234,7 @@ def test_explicit_table():
     result = db.execute_one("""
         SELECT bar.baz FROM foo.bar JOIN bow.bom ON true;
     """)
-    assert scalars(result.rows) == [1]
+    assert scalar(result.rows) == 1
 
 
 def test_explicit_schema():
@@ -251,7 +256,7 @@ def test_explicit_schema():
     result = db.execute_one("""
         SELECT foo.bar.baz FROM foo.bar JOIN bow.bar ON true;
     """)
-    assert scalars(result.rows) == [10]
+    assert scalar(result.rows) == 10
 
 
 def test_duplicate_aliases():
@@ -385,6 +390,18 @@ def test_bad_trailing_escape(operator):
     db = pystgres.MockDatabase()
     with pytest.raises(exc.InvalidEscapeSequence):
         db.execute_one(rf"SELECT 'foo\' {operator} 'foo\';")
+
+
+@pytest.mark.parametrize("expression,expected", [
+    ('4', True),
+    ('1', True),
+    ('0', False),
+    ('(-5)', True),
+])
+def test_int_bool(expression, expected):
+    db = pystgres.MockDatabase()
+    result = db.execute_one(f"SELECT {expression}::bool;")
+    assert scalar(result.rows) is expected
 
 
 def test_bad_bool():
@@ -586,7 +603,7 @@ def test_comma_join():
 def test_cast(expr, expected):
     db = pystgres.MockDatabase()
     result = db.execute_one(f"SELECT {expr}")
-    assert scalars(result.rows) == [expected]
+    assert scalar(result.rows) == expected
 
 
 @pytest.mark.xfail
@@ -731,3 +748,70 @@ def test_cant_just_counter():
     result = db.execute_one("SELECT foo FROM one ORDER BY id")
     # Notably comparing order here
     assert scalars(result.rows) == ['whoops', 'oops', 'whoops']
+
+
+def test_nonconstant_unary_negation():
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one("SELECT -(5::int);")
+    assert scalar(result.rows) == -5
+
+
+def test_bad_boolean_negation():
+    db = pystgres.MockDatabase()
+
+    with pytest.raises(exc.UndefinedFunctionError):
+        db.execute_one("SELECT -5::bool;")
+
+
+def test_booland_short_circuit():
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one("SELECT false AND 1/0 = 1;")
+    assert scalar(result.rows) is False
+
+
+def test_boolor_short_circuit():
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one("SELECT true OR 1/0 = 1;")
+    assert scalar(result.rows) is True
+
+
+@pytest.mark.xfail
+@pytest.mark.parametrize('left,right,expected', [
+    (16, 12, 4),
+    (16, -12, 4),
+    (-16, 12, -4),
+    (-16, -12, -4),
+])
+def test_remainder_not_modulo(left, right, expected):
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one(f"SELECT {left} % {right};")
+    assert scalar(result.rows) == expected
+
+
+@pytest.mark.xfail
+@pytest.mark.parametrize('operator', ['%', '/'])
+def test_divide_by_zero(operator):
+    db = pystgres.MockDatabase()
+
+    with pytest.raises(exc.DivisionByZero):
+        db.execute_one(f"SELECT 5 {operator} 0;")
+
+
+# Postgres gets these exactly right, but the naive python implementation
+# does some WACKY CRAP instead.
+# https://stackoverflow.com/q/28014241/1163020
+@pytest.mark.xfail
+@pytest.mark.parametrize('number,expected', [
+    (216, 6),
+    (-8, -2),
+    (2146689000, 1290),
+])
+def test_cube_root(number, expected):
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one(f"SELECT ||/ {number};")
+    assert scalar(result.rows) == expected
