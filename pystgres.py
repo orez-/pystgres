@@ -211,7 +211,7 @@ class SortByStrategy:
         return not self.nulls_last
 
 
-@attr.s(cmp=False)
+@attr.s(eq=False, order=False)
 class SortByKey:
     strat = attr.ib()
     value = attr.ib()
@@ -262,7 +262,7 @@ def create_pg_catalog():
                     return True
                 if 'false'.startswith(value):
                     return False
-            raise InvalidTextRepresentationError(
+            raise exc.InvalidTextRepresentationError(
                 f"invalid input syntax for type boolean: {original!r}"
             )
         if isinstance(value, int):
@@ -384,7 +384,7 @@ class Database:
 
     def _get_schema(self, schema_name):
         if schema_name not in self.schemas:
-            raise InvalidSchemaNameError(f"schema {schema_name!r} does not exist")
+            raise exc.InvalidSchemaNameError(f"schema {schema_name!r} does not exist")
         return self.schemas[schema_name]
 
     def _get_function(self, func_name, schema_name=None):
@@ -396,7 +396,7 @@ class Database:
 
         schema = self._get_schema(schema_name)
         if func_name not in schema.functions:
-            raise UndefinedFunctionError(
+            raise exc.UndefinedFunctionError(
                 f"function {display_name}() does not exist"
             )
         return schema.functions[func_name]
@@ -776,7 +776,7 @@ def _like_pattern_to_regex(pattern):
                     yield '\\'
                 yield char
     if escaped:
-        raise InvalidEscapeSequence("LIKE pattern must not end with escape character")
+        raise exc.InvalidEscapeSequence("LIKE pattern must not end with escape character")
 
 
 def like_operator(text, pattern):

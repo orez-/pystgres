@@ -380,6 +380,38 @@ def test_not_ilike_operator(expression, expected):
     assert equals_orderless(scalars(result.rows), expected)
 
 
+@pytest.mark.parametrize("operator", ["LIKE", "ILIKE", "NOT LIKE", "NOT ILIKE"])
+def test_bad_trailing_escape(operator):
+    db = pystgres.MockDatabase()
+    with pytest.raises(exc.InvalidEscapeSequence):
+        db.execute_one(rf"SELECT 'foo\' {operator} 'foo\';")
+
+
+def test_bad_bool():
+    db = pystgres.MockDatabase()
+    with pytest.raises(exc.InvalidTextRepresentationError):
+        db.execute_one("SELECT 'not a boolean'::bool;")
+
+
+def test_invalid_schema():
+    db = pystgres.MockDatabase()
+    with pytest.raises(exc.InvalidSchemaNameError):
+        db.execute_one("SELECT mystery_schema.nope_fn();")
+
+
+def test_invalid_table():
+    db = pystgres.MockDatabase()
+    with pytest.raises(exc.UndefinedTableError) as exception:
+        db.execute_one("SELECT * FROM mystery_schema.nope;")
+    assert str(exception.value) == 'relation "mystery_schema.nope" does not exist'
+
+
+def test_invalid_fn():
+    db = pystgres.MockDatabase()
+    with pytest.raises(exc.UndefinedFunctionError):
+        db.execute_one("SELECT public.nope_fn();")
+
+
 @pytest.mark.xfail
 @pytest.mark.parametrize("column,expected", [
     ('bang', [1, 2, 3]),
@@ -560,7 +592,7 @@ def test_cast(expr, expected):
 @pytest.mark.xfail
 def test_setof_type():
     db = pystgres.MockDatabase()
-    result = db.execute_one("""
+    result = db.execute_one(r"""
         SELECT regexp_matches('4 8 15 16 23 42', '\d+', 'g');
     """)
     assert equals_orderless(scalars(result.rows), [
@@ -575,7 +607,7 @@ def test_setof_type():
 
 @pytest.mark.xfail
 def test_double_setof():
-    result = db.execute_one("""
+    result = db.execute_one(r"""
         SELECT unnest(regexp_matches('2 5 11 23 47 95', '\d+', 'g'))::int;
     """)
     assert equals_orderless(scalars(result.rows), [2, 5, 11, 23, 47, 95])
