@@ -1,6 +1,8 @@
 from __future__ import generator_stop
 
+import argparse
 import collections
+import contextlib
 import functools
 import math
 import numbers
@@ -358,7 +360,7 @@ class Database:
     def _parse_select_column_ref(self, expr, sources):
         last = expr.fields[-1]
         if isinstance(last, psqlparse.nodes.AStar):
-            raise NotImplementedError()
+            raise NotImplementedError("star select is not implemented")
         column = last.str
         column_ref = [piece.str for piece in expr.fields[::-1]]
         column_source = sources.get_column_source(*column_ref)
@@ -594,16 +596,18 @@ class MockDatabase:
 
     def _handle_insert_statement(self, statement):
         relation_data = statement.relation
-        col_names = [
-            col.name
-            for col in statement.cols
-        ]
-        rows = simple_select(statement.select_stmt, self._db)
 
         table = self._db._get_table(
             schema_name=relation_data.schemaname,
             relname=relation_data.relname,
         )
+
+        if statement.cols is None:
+            col_names = list(table.rowtype.columns)
+        else:
+            col_names = [col.name for col in statement.cols]
+        rows = simple_select(statement.select_stmt, self._db)
+
         table = table.insert(
             table.rowtype(zip(
                 col_names,
@@ -793,6 +797,9 @@ class MockDatabase:
         elif isinstance(clause, psqlparse.nodes.JoinExpr):
             verify_implemented(clause, ['larg', 'rarg', 'quals', 'jointype'])
             return self._merge_clauses(clause)
+        elif isinstance(clause, psqlparse.nodes.RangeSubselect):
+            verify_implemented(clause, ['subquery', 'alias'])
+            raise NotImplementedError("subselects :(")
         else:
             raise NotImplementedError(type(clause))
 
@@ -943,29 +950,38 @@ def _format_result(elem):
     return str(elem)
 
 
-def _print_result(result):
-    if result is None:
-        return
+def _tabulate(rows, headers, *, title=None, show_row_count=True):
     PADDING = 1
-    if result.row_names:
+    if headers:
         column_widths = [
             max(len(str(elem)) for elem in column)
-            for column in zip(*([result.row_names] + result.rows))
+            for column in zip(*([headers] + rows))
         ]
+        separator = '+'.join('-' * (width + PADDING * 2) for width in column_widths)
+        if title is not None:
+            total_width = len(separator)
+            print(f"{title:^{total_width}}")
         print('|'.join(
             f'{name:^{width + PADDING * 2}}'
-            for width, name in zip(column_widths, result.row_names)
+            for width, name in zip(column_widths, headers)
         ))
-        print('+'.join('-' * (width + PADDING * 2) for width in column_widths))
-        for row in result.rows:
+        print(separator)
+        for row in rows:
             print('|'.join(
                 f'{" " * PADDING}{_format_result(elem):{_align(elem)}{width}}{" " * PADDING}'
                 for width, elem in zip(column_widths, row)
             ))
     else:
         print('--')
-    print(f"({len(result.rows)} row{'' if len(result.rows) == 1 else 's'})")
+    if show_row_count:
+        print(f"({len(rows)} row{'' if len(rows) == 1 else 's'})")
     print()
+
+
+def _print_result(result):
+    if result is None:
+        return
+    _tabulate(result.rows, headers=result.row_names)
 
 
 def _align(elem):
@@ -978,23 +994,22 @@ def repl():
     import readline
 
     db = MockDatabase()
+    print("pystgresql (pre-alpha)\nType \"help\" for help.\n")
+
     try:
         while True:
             try:
                 query = input('# ')
-                for result in db.execute_lazy(query):
-                    _print_result(result)
+                if _intercept_repl_command(db, query):
+                    continue
+                with print_interactive_errors(query):
+                    for result in db.execute_lazy(query):
+                        _print_result(result)
             except KeyboardInterrupt:
                 print()
             except EOFError:
                 print()
                 raise
-            except exc.PostgresError as postgres_exc:
-                print("ERROR: ", postgres_exc)
-            except psqlparse.exceptions.PSqlParseError as psql_exc:
-                print("ERROR: ", psql_exc)
-                print("LINE 1:", query)
-                print("     ", " " * psql_exc.cursorpos, "^")
             # Catch everything and print it instead of crashing the repl.
             except Exception:  # pylint: disable=broad-except
                 traceback.print_exc()
@@ -1002,5 +1017,119 @@ def repl():
         pass
 
 
+def _intercept_repl_command(db, query):
+    query = query.rstrip()
+    if query == 'help':
+        print(
+            "You are using pystgresql, the command-line interface to an in-memory database "
+            "emulating PostgreSQL.\n"
+            "Type:  \\q to quit"
+        )
+        return True
+    # python's `split` api is a pain in the ass
+    cmd, *query = query.split() or [""]
+    if not cmd.startswith('\\'):
+        return False
+    cmd = cmd[1:]  # strip leading backslash
+    if cmd == 'q':
+        raise EOFError  # TODO i kind of hate this, circle back on it.
+    elif cmd == '?':
+        # TODO would be nice to formalize and consolidate this, so the help was sourced
+        # from the actual structure of the commands.
+        print(
+            "General\n"
+            "  \\q                     quit pystgresql\n\n"
+            "Help\n"
+            "  \\?                     show help on backslash commands\n\n"
+            "Informational\n"
+            "  (options: + = additional detail)\n"
+            "  \\d[+]                  list tables, views, and sequences\n"
+            "  \\d[+]  NAME            describe table, view, sequence, or index\n"
+            "  \\dn                    list schemas\n"
+            "  \\dt                    list tables"
+        )
+    elif cmd in ('d', 'd+'):
+        if not query:
+            _describe_relations(db)
+        else:
+            _describe_table(db, query[0])
+    elif cmd == 'dt':
+        _describe_relations(db)
+    elif cmd == 'dn':
+        _describe_schemas(db)
+    else:
+        print(f"invalid command {cmd}\nTry \\? for help.")
+    return True
+
+
+def _describe_table(db, table_name):
+    table = db._db._get_table(table_name)
+    columns = table.rowtype.columns
+    _tabulate(
+        rows=[(column, '?', '', '', '') for column in columns],
+        headers=['Column', 'Type', 'Collation', 'Nullable', 'Default'],
+        title=f'Table "{table.schema}.{table.relname}"',
+        show_row_count=False,
+    )
+
+
+def _describe_relations(db):
+    relations = [
+        (table.schema, table.relname, 'table', '')
+        for schema in db._db.schemas.values()
+        for table in schema.tables.values()
+    ]
+    if not relations:
+        print("Did not find any relations.")
+        return
+    _tabulate(
+        rows=relations,
+        headers=['Schema', 'Name', 'Type', 'Owner'],
+        title='List of relations',
+    )
+
+
+def _describe_schemas(db):
+    schemas = [(name, '') for name in db._db.schemas]
+    _tabulate(
+        rows=schemas,
+        headers=['Name', 'Owner'],
+        title='List of schemas',
+    )
+
+
+@contextlib.contextmanager
+def print_interactive_errors(query):
+    try:
+        yield
+    except exc.PostgresError as postgres_exc:
+        print("ERROR: ", postgres_exc)
+    except psqlparse.exceptions.PSqlParseError as psql_exc:
+        print("ERROR: ", psql_exc)
+        print("LINE 1:", query)
+        print("     ", " " * psql_exc.cursorpos, "^")
+
+
+def run_command(command):
+    db = MockDatabase()
+
+    with print_interactive_errors(command):
+        result = None
+        for result in db.execute_lazy(command):
+            pass
+        _print_result(result)
+
+
+def pystgresql_cmdline():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--command", nargs='?')
+
+    args = parser.parse_args()
+    if args.command is not None:
+        run_command(args.command)
+    else:
+        repl()
+
+
 if __name__ == '__main__':
-    repl()
+    pystgresql_cmdline()

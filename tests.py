@@ -815,3 +815,60 @@ def test_cube_root(number, expected):
 
     result = db.execute_one(f"SELECT ||/ {number};")
     assert scalar(result.rows) == expected
+
+
+@pytest.mark.xfail
+def test_values():
+    db = pystgres.MockDatabase()
+
+    result = db.execute_one('SELECT a,b,c FROM (VALUES (1,2,3),(4,5,6)) _(a,b,c);')
+    assert equals_orderless(result.rows, [(1, 2, 3), (4, 5, 6)])
+
+
+def test_insert_implicit_columns():
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT PRIMARY KEY,
+            bang BIGINT,
+            boom TEXT
+        );
+    """)
+
+    db.execute("""INSERT INTO foo.bar VALUES (3, 1, 'hey'), (6, 12, 'wow');""")
+
+
+@pytest.mark.xfail
+def test_insert_implicit_columns_extra():
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT PRIMARY KEY,
+            bang BIGINT,
+            boom TEXT
+        );
+    """)
+
+    with pytest.raises(exc.PostgresSyntaxError) as exception:
+        db.execute("""INSERT INTO foo.bar VALUES (3, 1, 'hey', 'oops');""")
+    assert str(exception.value) == 'INSERT has more expressions than target columns'
+
+
+@pytest.mark.xfail
+def test_insert_implicit_columns_missing():
+    db = pystgres.MockDatabase()
+
+    db.execute("""
+        CREATE TABLE foo.bar (
+            baz BIGINT PRIMARY KEY,
+            bang BIGINT,
+            boom TEXT
+        );
+
+        INSERT INTO foo.bar VALUES (3, 1);
+    """)
+
+    result = db.execute_one("""SELECT baz, bang, boom FROM foo.bar;""")
+    assert result.rows == [(3, 1, None)]
