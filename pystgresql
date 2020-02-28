@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+PYTHONPATH=../psqlparse/ python3 pystgres.py "$@"
